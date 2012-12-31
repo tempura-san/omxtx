@@ -152,6 +152,7 @@ static struct context {
 	int		bitrate;
 	char		*resize;
 	char		*oname;
+	double		frameduration;
 } ctx;
 #define FLAGS_VERBOSE		(1<<0)
 #define FLAGS_DECEMPTIEDBUF	(1<<1)
@@ -329,13 +330,19 @@ printf("Found a codec at %p\n", c);
 			cc = oflow->codec;
 			cc->width = viddef->nFrameWidth;
 			cc->height = viddef->nFrameHeight;
-			cc->time_base = iflow->time_base;
+			cc->time_base = iflow->codec->time_base;
 			cc->codec_id = CODEC_ID_H264;
 			cc->codec_type = AVMEDIA_TYPE_VIDEO;
-			cc->max_b_frames = 15;	/* Probably wrong */
-			cc->gop_size = 50;
+			cc->max_b_frames = 50;	/* Probably wrong */
+			cc->gop_size = 200;
 			cc->pix_fmt = PIX_FMT_YUV420P;
-			cc->bit_rate = 2*1024*1024;
+			cc->bit_rate = ctx.bitrate;
+			cc->profile = FF_PROFILE_H264_HIGH_422;
+			oflow->avg_frame_rate = iflow->avg_frame_rate;
+			oflow->r_frame_rate = iflow->r_frame_rate;
+			oflow->time_base = iflow->time_base;
+printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.den, oflow->r_frame_rate.num, oflow->r_frame_rate.den);
+//			oflow->sample_aspect_ratio = iflow->sample_aspect_ratio;
 		} else { 	/* Something pre-existing. */
 			c = avcodec_find_encoder(iflow->codec->codec_id);
 			oflow = avformat_new_stream(oc, c);
@@ -346,10 +353,13 @@ printf("Found a codec at %p\n", c);
 		if (oc->oformat->flags & AVFMT_GLOBALHEADER)
 			oc->streams[i]->codec->flags
 				|= CODEC_FLAG_GLOBAL_HEADER;
+/*
 		printf("Stream %d: %d\n", i,
 			avcodec_open2(oc->streams[i]->codec,
-			avcodec_find_encoder(oc->streams[i]->codec->codec_id),
-			NULL));
+				avcodec_find_encoder(
+					oc->streams[i]->codec->codec_id),
+				NULL));
+*/
 		if (oc->streams[i]->codec->sample_rate == 0)
 			oc->streams[i]->codec->sample_rate = 48000; /* ish */
 	}
@@ -367,6 +377,8 @@ printf("\n\n\nOutput:\n");
 		printf("Failed to write header: %s\n", err);
 		exit(1);
 	}
+
+	printf("\n\n");
 
 	return oc;
 }
@@ -807,6 +819,7 @@ dumpport(sp, splportidx);
 			viddef->nBitrate = (2*1024*1024);
 		else
 			viddef->nBitrate = ctx->bitrate;
+		ctx->bitrate = viddef->nBitrate;
 	}
 
 	viddef->eCompressionFormat = OMX_VIDEO_CodingAVC;
@@ -1201,6 +1214,7 @@ int main(int argc, char *argv[])
 		OMX_BUFFERHEADERTYPE *spare;
 		AVRational omxtimebase = { 1, 1000000 };
 		OMX_TICKS tick;
+		uint64_t dts = 0;
 
 		if (offset == 0 && ctx.decstate != DECFLUSH) {
 			rc = av_read_frame(ic, rp);
@@ -1224,7 +1238,7 @@ int main(int argc, char *argv[])
 			} else {
 				uint64_t omt;
 
-				if (rp->pts != AV_NOPTS_VALUE) {
+//				if (rp->pts != AV_NOPTS_VALUE) {
 					omt = av_rescale_q(rp->pts,
 						ic->streams[index]->time_base,
 						omxtimebase);
@@ -1233,9 +1247,10 @@ int main(int argc, char *argv[])
 					tick.nHighPart = (uint32_t)
 						((omt & 0xffffffff00000000) 
 							>> 32);
-				} else {
-					tick.nLowPart = tick.nHighPart = 0;
-				}
+//				} else {
+//					tick.nLowPart = tick.nHighPart = 0;
+//				}
+// printf("Input PTS: %lld\n", rp->pts);
 // printf("Inbound PTS: %lld\n", rp->pts);
 			}
 
@@ -1300,16 +1315,18 @@ int main(int argc, char *argv[])
 				pkt.size = spare->nFilledLen;
 				if (spare->nFlags & OMX_BUFFERFLAG_SYNCFRAME)
 					pkt.flags |= AV_PKT_FLAG_KEY;
-				if (spare->nTimeStamp.nLowPart == 0 &&
-					spare->nTimeStamp.nHighPart == 0) {
-					pkt.pts = AV_NOPTS_VALUE;
-				} else {
+//				if (spare->nTimeStamp.nLowPart == 0 &&
+//					spare->nTimeStamp.nHighPart == 0) {
+//					pkt.pts = AV_NOPTS_VALUE;
+//				} else {
 					pkt.pts = av_rescale_q(((((uint64_t)
 						tick.nHighPart)<<32)
 						| tick.nLowPart), omxtimebase,
 						ic->streams[index]->time_base);
-				}
-if (spare->nFilledLen + spare->nOffset == spare->nAllocLen) printf("\nFull packet!\n");
+//				}
+				pkt.dts = AV_NOPTS_VALUE; // dts;
+				dts += ctx.frameduration;
+// printf("PTS: %lld\n", pkt.pts);
 				r = av_interleaved_write_frame(ctx.oc, &pkt);
 				if (r != 0) {
 					char err[256];
