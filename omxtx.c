@@ -951,6 +951,17 @@ static void usage(const char *name)
 
 
 
+static void freepacket(AVPacket *p)
+{
+	if (p->data)
+		free(p->data);
+	p->data = NULL;
+	p->destruct = av_destruct_packet;
+	av_free_packet(p);
+}
+
+
+
 int main(int argc, char *argv[])
 {
 	AVFormatContext	*ic;
@@ -1201,7 +1212,7 @@ int main(int argc, char *argv[])
 	rp = calloc(sizeof(AVPacket), 1);
 	filtertest = ish264;
 	tmpbufoff = 0;
-	tmpbuf = malloc(1*1024*1024);
+	tmpbuf = NULL;
 
 	for (offset = i = j = 0; ctx.decstate != DECFAILED; i++, j++) {
 		int rc;
@@ -1247,7 +1258,7 @@ int main(int argc, char *argv[])
 //				} else {
 //					tick.nLowPart = tick.nHighPart = 0;
 //				}
-// printf("Inbound PTS: %lld (%d/%d)\n", rp->pts, ic->streams[index]->time_base.num, ic->streams[index]->time_base.den);
+ printf("Inbound PTS: %lld (%d/%d)\n", rp->pts, ic->streams[index]->time_base.num, ic->streams[index]->time_base.den);
 			}
 
 			size = rp->size;
@@ -1307,6 +1318,8 @@ int main(int argc, char *argv[])
 
 				if ((spare->nFlags & OMX_BUFFERFLAG_ENDOFNAL)
 					== 0) {
+					if (!tmpbuf)
+						tmpbuf = malloc(1024*1024*1);
 					memcpy(&tmpbuf[tmpbufoff],
 						&spare->pBuffer[spare->nOffset],
 						spare->nFilledLen);
@@ -1328,10 +1341,15 @@ int main(int argc, char *argv[])
 					pkt.data = tmpbuf;
 					pkt.size = tmpbufoff;
 					tmpbufoff = 0;
+					tmpbuf = NULL;
 				} else {
-					pkt.data = &spare->pBuffer[spare->nOffset];
+					pkt.data = malloc(spare->nFilledLen);
+					memcpy(pkt.data, spare->pBuffer +
+						spare->nOffset,
+						spare->nFilledLen);
 					pkt.size = spare->nFilledLen;
 				}
+				pkt.destruct = freepacket;
 				if (spare->nFlags & OMX_BUFFERFLAG_SYNCFRAME)
 					pkt.flags |= AV_PKT_FLAG_KEY;
 //				if (spare->nTimeStamp.nLowPart == 0 &&
@@ -1345,7 +1363,7 @@ int main(int argc, char *argv[])
 //				}
 				pkt.dts = AV_NOPTS_VALUE; // dts;
 				dts += ctx.frameduration;
-// printf("PTS: %lld %x\n", pkt.pts, spare->nFlags);
+ printf("PTS: %lld %x\n", pkt.pts, spare->nFlags);
 				r = av_interleaved_write_frame(ctx.oc, &pkt);
 				if (r != 0) {
 					char err[256];
