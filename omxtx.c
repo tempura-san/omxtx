@@ -353,13 +353,6 @@ printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.d
 		if (oc->oformat->flags & AVFMT_GLOBALHEADER)
 			oc->streams[i]->codec->flags
 				|= CODEC_FLAG_GLOBAL_HEADER;
-/*
-		printf("Stream %d: %d\n", i,
-			avcodec_open2(oc->streams[i]->codec,
-				avcodec_find_encoder(
-					oc->streams[i]->codec->codec_id),
-				NULL));
-*/
 		if (oc->streams[i]->codec->sample_rate == 0)
 			oc->streams[i]->codec->sample_rate = 48000; /* ish */
 	}
@@ -984,6 +977,8 @@ int main(int argc, char *argv[])
 	int		ish264;
 	int		filtertest;
 	int		opt;
+	uint8_t		*tmpbuf;
+	off_t		tmpbufoff;
 
 	if (argc < 3)
 		usage(argv[0]);
@@ -1205,6 +1200,8 @@ int main(int argc, char *argv[])
 
 	rp = calloc(sizeof(AVPacket), 1);
 	filtertest = ish264;
+	tmpbufoff = 0;
+	tmpbuf = malloc(1*1024*1024);
 
 	for (offset = i = j = 0; ctx.decstate != DECFAILED; i++, j++) {
 		int rc;
@@ -1250,8 +1247,7 @@ int main(int argc, char *argv[])
 //				} else {
 //					tick.nLowPart = tick.nHighPart = 0;
 //				}
-// printf("Input PTS: %lld\n", rp->pts);
-// printf("Inbound PTS: %lld\n", rp->pts);
+// printf("Inbound PTS: %lld (%d/%d)\n", rp->pts, ic->streams[index]->time_base.num, ic->streams[index]->time_base.den);
 			}
 
 			size = rp->size;
@@ -1309,10 +1305,33 @@ int main(int argc, char *argv[])
 				int r;
 				OMX_TICKS tick = spare->nTimeStamp;
 
+				if ((spare->nFlags & OMX_BUFFERFLAG_ENDOFNAL)
+					== 0) {
+					memcpy(&tmpbuf[tmpbufoff],
+						&spare->pBuffer[spare->nOffset],
+						spare->nFilledLen);
+					tmpbufoff += spare->nFilledLen;
+					spare->nFilledLen = 0;
+					spare->nOffset = 0;
+					OERRq(OMX_FillThisBuffer(m4, spare));
+					spare = spare->pAppPrivate;
+					continue;
+				}
+
 				av_init_packet(&pkt);
 				pkt.stream_index = vidindex;
-				pkt.data = &spare->pBuffer[spare->nOffset];
-				pkt.size = spare->nFilledLen;
+				if (tmpbufoff) {
+					memcpy(&tmpbuf[tmpbufoff],
+						&spare->pBuffer[spare->nOffset],
+						spare->nFilledLen);
+					tmpbufoff += spare->nFilledLen;
+					pkt.data = tmpbuf;
+					pkt.size = tmpbufoff;
+					tmpbufoff = 0;
+				} else {
+					pkt.data = &spare->pBuffer[spare->nOffset];
+					pkt.size = spare->nFilledLen;
+				}
 				if (spare->nFlags & OMX_BUFFERFLAG_SYNCFRAME)
 					pkt.flags |= AV_PKT_FLAG_KEY;
 //				if (spare->nTimeStamp.nLowPart == 0 &&
@@ -1326,12 +1345,12 @@ int main(int argc, char *argv[])
 //				}
 				pkt.dts = AV_NOPTS_VALUE; // dts;
 				dts += ctx.frameduration;
-// printf("PTS: %lld\n", pkt.pts);
+// printf("PTS: %lld %x\n", pkt.pts, spare->nFlags);
 				r = av_interleaved_write_frame(ctx.oc, &pkt);
 				if (r != 0) {
 					char err[256];
 					av_strerror(r, err, sizeof(err));
-					printf("Failed to write a video frame: %s (%lld, %llx; %d %d).\n", err, pkt.pts, pkt.pts, tick.nLowPart, tick.nHighPart);
+					printf("Failed to write a video frame: %s (%lld, %llx; %d %d) %x.\n", err, pkt.pts, pkt.pts, tick.nLowPart, tick.nHighPart, spare->nFlags);
 				} else {
 //					printf("Wrote a video frame! %lld (%llx)\n", pkt.pts, pkt.pts);
 				}
@@ -1379,7 +1398,7 @@ int main(int argc, char *argv[])
 
 	end = time(NULL);
 
-	printf("Processed %d frames in %d seconds; %df/s\n",
+	printf("Processed %d frames in %d seconds; %df/s\n\n\n",
 		ctx.framecount, end-start, (ctx.framecount/(end-start)));
 
 	av_write_trailer(oc);
