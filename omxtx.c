@@ -36,7 +36,7 @@
  */
 
 #define _BSD_SOURCE
-#define FF_API_CODEC_ID
+#define FF_API_CODEC_ID 1
 
 #include <stdio.h>
 #include <stdint.h>
@@ -320,27 +320,37 @@ static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
 	}
 	oc->oformat = fmt;
 	snprintf(oc->filename, sizeof(oc->filename), "%s", oname);
+	oc->debug = 1;
+	oc->start_time_realtime = ic->start_time_realtime;
+	oc->start_time = ic->start_time;
 
+#define ETB(x) x.num, x.den
 	for (i = 0; i < ic->nb_streams; i++) {
 		iflow = ic->streams[i];
 		if (i == idx) {	/* My new H.264 stream. */
 			c = avcodec_find_encoder(CODEC_ID_H264);
 printf("Found a codec at %p\n", c);
 			oflow = avformat_new_stream(oc, c);
+printf("Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d, ticks: %d; %d %lld/%lld\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate), oflow->codec->ticks_per_frame, iflow->codec->ticks_per_frame, oc->start_time_realtime, ic->start_time_realtime);
 			cc = oflow->codec;
 			cc->width = viddef->nFrameWidth;
 			cc->height = viddef->nFrameHeight;
 			cc->time_base = iflow->codec->time_base;
 			cc->codec_id = CODEC_ID_H264;
 			cc->codec_type = AVMEDIA_TYPE_VIDEO;
-			cc->max_b_frames = 50;	/* Probably wrong */
+			cc->max_b_frames = 12;	/* Probably wrong */
+			cc->has_b_frames = 1;
 			cc->gop_size = 200;
 			cc->pix_fmt = PIX_FMT_YUV420P;
 			cc->bit_rate = ctx.bitrate;
-			cc->profile = FF_PROFILE_H264_HIGH_422;
+			cc->profile = FF_PROFILE_H264_HIGH;
+			cc->level = 41;
 			oflow->avg_frame_rate = iflow->avg_frame_rate;
 			oflow->r_frame_rate = iflow->r_frame_rate;
 			oflow->time_base = iflow->time_base;
+			cc->flags = CODEC_FLAG2_LOCAL_HEADER;
+			oflow->start_time = iflow->start_time;
+printf("Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate));
 printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.den, oflow->r_frame_rate.num, oflow->r_frame_rate.den);
 //			oflow->sample_aspect_ratio = iflow->sample_aspect_ratio;
 		} else { 	/* Something pre-existing. */
@@ -362,6 +372,10 @@ printf("\n\n\nInput:\n");
 printf("\n\n\nOutput:\n");
 	av_dump_format(oc, 0, oname, 1);
 
+/* At some point they changed the API: */
+#ifndef URL_WRONLY
+#define URL_WRONLY AVIO_FLAG_WRITE
+#endif
 	avio_open(&oc->pb, oname, URL_WRONLY);
 
 	r = avformat_write_header(oc, NULL);
@@ -1236,6 +1250,14 @@ int main(int argc, char *argv[])
 				i--;
 				if (ctx.oc) {
 					int r;
+					if (rp->pts != AV_NOPTS_VALUE)
+						rp->pts = av_rescale_q(rp->pts,
+							ic->streams[index]->time_base,
+							oc->streams[index]->time_base);
+					if (rp->dts != AV_NOPTS_VALUE)
+						rp->dts = av_rescale_q(rp->dts,
+							ic->streams[index]->time_base,
+							oc->streams[index]->time_base);
 					r = av_interleaved_write_frame(ctx.oc,
 						rp);
 					if (r < 0)
@@ -1258,7 +1280,7 @@ int main(int argc, char *argv[])
 //				} else {
 //					tick.nLowPart = tick.nHighPart = 0;
 //				}
- printf("Inbound PTS: %lld (%d/%d)\n", rp->pts, ic->streams[index]->time_base.num, ic->streams[index]->time_base.den);
+// printf("Inbound PTS: %lld (%d/%d)\n", rp->pts, ic->streams[index]->time_base.num, ic->streams[index]->time_base.den);
 			}
 
 			size = rp->size;
@@ -1359,11 +1381,11 @@ int main(int argc, char *argv[])
 					pkt.pts = av_rescale_q(((((uint64_t)
 						tick.nHighPart)<<32)
 						| tick.nLowPart), omxtimebase,
-						ic->streams[index]->time_base);
+						oc->streams[index]->time_base);
 //				}
 				pkt.dts = AV_NOPTS_VALUE; // dts;
 				dts += ctx.frameduration;
- printf("PTS: %lld %x\n", pkt.pts, spare->nFlags);
+// printf("PTS: %lld %x\n", pkt.pts, spare->nFlags);
 				r = av_interleaved_write_frame(ctx.oc, &pkt);
 				if (r != 0) {
 					char err[256];
