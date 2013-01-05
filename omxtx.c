@@ -146,8 +146,6 @@ static struct context {
 	int		vidindex;
 	OMX_HANDLETYPE	m2, m4, rs;
 	pthread_mutex_t	lock;
-	AVPacket	*nextframe;
-	AVPacket	*frameheads[1024];
 	AVBitStreamFilterContext *bsfc;
 	int		bitrate;
 	char		*resize;
@@ -616,6 +614,7 @@ static OMX_BUFFERHEADERTYPE *allocbufs(OMX_HANDLETYPE h, int port, int enable)
 static AVBitStreamFilterContext *dofiltertest(AVPacket *rp)
 {
 	AVBitStreamFilterContext *bsfc;
+	bsfc = NULL;
 
 	if (!(rp->data[0] == 0x00 && rp->data[1] == 0x00 &&
 		rp->data[2] == 0x00 && rp->data[3] == 0x01)) {
@@ -625,7 +624,8 @@ static AVBitStreamFilterContext *dofiltertest(AVPacket *rp)
 		} else {
 			printf("Have a filter at %p\n", bsfc);
 		}
-	}
+	} else
+		printf("No need for a filter.\n");
 
 	return bsfc;
 }
