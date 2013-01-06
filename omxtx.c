@@ -285,7 +285,8 @@ static const char *mapcomponent(struct context *ctx, OMX_HANDLETYPE h)
 
 
 static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
-	const char *oname, int idx, const OMX_PARAM_PORTDEFINITIONTYPE *prt)
+	const char *oname, int idx, const OMX_PARAM_PORTDEFINITIONTYPE *prt,
+	AVPacket **ifb)
 {
 	AVFormatContext			*oc;
 	AVOutputFormat			*fmt;
@@ -383,7 +384,25 @@ printf("\n\n\nOutput:\n");
 		exit(1);
 	}
 
-	printf("\n\n");
+	printf("Writing initial frame buffer contents out...");
+	for (i = 0; ifb[i]; i++) {
+		AVPacket *rp;
+		int index;
+		rp = ifb[i];
+		index = rp->stream_index;
+
+		if (rp->pts != AV_NOPTS_VALUE)
+			rp->pts = av_rescale_q(rp->pts,
+				ic->streams[index]->time_base,
+				oc->streams[index]->time_base);
+		if (rp->dts != AV_NOPTS_VALUE)
+			rp->dts = av_rescale_q(rp->dts,
+				ic->streams[index]->time_base,
+				oc->streams[index]->time_base);
+		av_interleaved_write_frame(oc, rp);
+	}
+
+	printf(" ...done.  Wrote %d frames.\n\n", i);
 
 	return oc;
 }
@@ -663,7 +682,7 @@ static AVPacket *filter(struct context *ctx, AVPacket *rp)
 
 
 
-static void configure(struct context *ctx)
+static void configure(struct context *ctx, AVPacket **ifb)
 {
 	pthread_t	fpst;
 	pthread_attr_t	fpsa;
@@ -937,7 +956,7 @@ printf("Post-sleep.\n"); fflush(stdout);
 
 /* Make an output context: */
 	ctx->oc = makeoutputcontext(ctx->ic, ctx->oname, ctx->vidindex,
-		portdef);
+		portdef, ifb);
 	if (!ctx->oc) {
 		fprintf(stderr, "Whoops.\n");
 		exit(1);
@@ -1004,6 +1023,8 @@ int main(int argc, char *argv[])
 	int		opt;
 	uint8_t		*tmpbuf;
 	off_t		tmpbufoff;
+	AVPacket	**ifb;
+	int		ifbo;
 
 	if (argc < 3)
 		usage(argv[0]);
@@ -1227,6 +1248,8 @@ int main(int argc, char *argv[])
 	filtertest = ish264;
 	tmpbufoff = 0;
 	tmpbuf = NULL;
+	ifbo = 0;
+	ifb = calloc(sizeof(AVPacket *), 1);
 
 	for (offset = i = j = 0; ctx.decstate != DECFAILED; i++, j++) {
 		int rc;
@@ -1262,8 +1285,21 @@ int main(int argc, char *argv[])
 						rp);
 					if (r < 0)
 						printf("r: %d\n", r);
-				} else
+				} else {
+					AVPacket *np;
+					ifb = realloc(ifb,
+						sizeof(AVPacket *)*(ifbo+2));
+					np = malloc(sizeof(AVPacket));
+					ifb[ifbo++] = np;
+					ifb[ifbo  ] = NULL;
+					*np = *rp;
+					np->data = malloc(np->size);
+					memcpy(np->data, rp->data, np->size);
+					np->side_data = NULL;
+					np->side_data_elems = 0;
+					np->pos = -1;
 					av_free_packet(rp);
+				}
 				continue;
 			} else {
 				uint64_t omt;
@@ -1301,7 +1337,7 @@ int main(int argc, char *argv[])
 		switch (ctx.decstate) {
 		case DECTUNNELSETUP:
 			start = time(NULL);
-			configure(&ctx);
+			configure(&ctx, ifb);
 			oc = ctx.oc;
 			ctx.decstate = DECRUNNING;
 			break;
