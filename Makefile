@@ -16,9 +16,6 @@ all: omxtx
 omxtx: omxtx.o
 	$(CC) $(LDFLAGS) $(LIBS) -o omxtx $(OFILES)
 
-remuxer: remuxer.o
-	$(CC) $(LDFLAGS) $(LIBS) -o remuxer remuxer.o
-
 clean:
 	rm -f *.o omxtx
 	rm -rf dist
