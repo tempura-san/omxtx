@@ -110,6 +110,14 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 #define VIDNAME "OMX.broadcom.video_render"
 #define SPLNAME "OMX.broadcom.video_splitter"
 
+/* portbase for the modules, could also be queried, but as the components are broadcom/raspberry
+   specific anyway... */
+#define PORT_RSZ  60
+#define PORT_VID  90
+#define PORT_DEC 130
+#define PORT_ENC 200
+#define PORT_SPL 250
+
 enum states {
 	DECINIT,
 	DECTUNNELSETUP,
@@ -139,7 +147,6 @@ static struct context {
 	OMX_BUFFERHEADERTYPE *encbufs, *bufhead;
 	volatile enum states	decstate;
 	volatile enum states	encstate;
-	int		encportidx, decportidx, rszportidx;
 	int		vidindex;
 	OMX_HANDLETYPE	dec, enc, rsz;
 	pthread_mutex_t	lock;
@@ -255,10 +262,10 @@ static void dumpportstate(void)
 	enum OMX_STATETYPE		state;
 
 	printf("\n\nIn exit handler, after %d frames:\n", ctx.framecount);
-	dumpport(ctx.dec, ctx.decportidx);
-	dumpport(ctx.dec, ctx.decportidx+1);
-	dumpport(ctx.enc, ctx.encportidx);
-	dumpport(ctx.enc, ctx.encportidx+1);
+	dumpport(ctx.dec, PORT_DEC);
+	dumpport(ctx.dec, PORT_DEC+1);
+	dumpport(ctx.enc, PORT_ENC);
+	dumpport(ctx.enc, PORT_ENC+1);
 
 	OMX_GetState(ctx.dec, &state);
 	printf("Decoder state: %d\n", state);
@@ -579,10 +586,10 @@ static void *fps(void *p)
 		if (0 && ctx.fps == 0) {
 			printf("In fps thread, after %d frames:\n",
 				ctx.framecount);
-			dumpport(ctx.dec, ctx.decportidx);
-			dumpport(ctx.dec, ctx.decportidx+1);
-			dumpport(ctx.enc, ctx.encportidx);
-			dumpport(ctx.enc, ctx.encportidx+1);
+			dumpport(ctx.dec, PORT_DEC);
+			dumpport(ctx.dec, PORT_DEC+1);
+			dumpport(ctx.enc, PORT_ENC);
+			dumpport(ctx.enc, PORT_ENC+1);
 
 			OMX_GetState(ctx.dec, &state);
 			printf("Decoder state: %d\n", state);
@@ -693,8 +700,6 @@ static void configure(struct context *ctx, AVPacket **ifb)
 	OMX_IMAGE_PORTDEFINITIONTYPE	*imgdef;
 	OMX_VIDEO_PARAM_PORTFORMATTYPE	*pfmt;
 	OMX_CONFIG_POINTTYPE		*pixaspect;
-	int 				encportidx, decportidx, rszportidx,
-					splportidx, vidportidx;
 	OMX_HANDLETYPE			dec, enc, rsz, spl, vid;
 	int				x, y;
 	int				i;
@@ -704,17 +709,11 @@ static void configure(struct context *ctx, AVPacket **ifb)
 	MAKEME(pixaspect, OMX_CONFIG_POINTTYPE);
 
 /* These just save a bit of typing.  No other reason. */
-	encportidx = ctx->encportidx;
-	decportidx = ctx->decportidx;
-	rszportidx = ctx->rszportidx;
 	dec = ctx->dec;
 	enc = ctx->enc;
 	rsz = ctx->rsz;
 	viddef = &portdef->format.video;
 	imgdef = &imgportdef->format.image;
-
-	splportidx = 250;
-	vidportidx = 90;
 
 	printf("Decoder has changed settings.  Setting up encoder.\n");
 
@@ -723,16 +722,16 @@ static void configure(struct context *ctx, AVPacket **ifb)
 		OERR(OMX_GetHandle(&vid, VIDNAME, &ctx, &genevents));
 		for (i = 0; i < 5; i++)
 			OERR(OMX_SendCommand(spl, OMX_CommandPortDisable,
-				splportidx+i, NULL));
+				PORT_SPL+i, NULL));
 		OERR(OMX_SendCommand(vid, OMX_CommandPortDisable,
-			vidportidx, NULL));
+			PORT_VID, NULL));
 	}
 
 /* Get the decoder port state...: */
-	portdef->nPortIndex = decportidx+1;
+	portdef->nPortIndex = PORT_DEC+1;
 	OERR(OMX_GetParameter(dec, OMX_IndexParamPortDefinition, portdef));
 	if (ctx->resize) {
-		imgportdef->nPortIndex = rszportidx;
+		imgportdef->nPortIndex = PORT_RSZ;
 		OERR(OMX_GetParameter(rsz, OMX_IndexParamPortDefinition,
 			imgportdef));
 /*
@@ -770,13 +769,13 @@ static void configure(struct context *ctx, AVPacket **ifb)
 		imgdef->nSliceHeight = 0;
 		printf("Frame size: %dx%d, scale factor %d\n",
 			imgdef->nFrameWidth, imgdef->nFrameHeight, x);
-		imgportdef->nPortIndex = rszportidx+1;
+		imgportdef->nPortIndex = PORT_RSZ+1;
 		OERR(OMX_SetParameter(rsz, OMX_IndexParamPortDefinition,
 			imgportdef));
 		usleep(40);
 		OERR(OMX_GetParameter(rsz, OMX_IndexParamPortDefinition,
 			imgportdef));
-		portdef->nPortIndex = encportidx;
+		portdef->nPortIndex = PORT_ENC;
 		viddef->nFrameWidth = imgdef->nFrameWidth;
 		viddef->nFrameHeight = imgdef->nFrameHeight;
 		viddef->nStride = imgdef->nStride;
@@ -787,7 +786,7 @@ static void configure(struct context *ctx, AVPacket **ifb)
 		viddef->pNativeWindow = imgdef->pNativeWindow;
 	}
 /* ... and feed it to the encoder: */
-	portdef->nPortIndex = encportidx;
+	portdef->nPortIndex = PORT_ENC;
 	OERR(OMX_SetParameter(enc, OMX_IndexParamPortDefinition, portdef));
 
 /* Setup the tunnel(s): */
@@ -796,40 +795,40 @@ static void configure(struct context *ctx, AVPacket **ifb)
 			NULL));
 		OERR(OMX_SendCommand(spl, OMX_CommandStateSet, OMX_StateIdle,
 			NULL));
-		portdef->nPortIndex = vidportidx;
+		portdef->nPortIndex = PORT_VID;
 //		OERR(OMX_SetParameter(vid, OMX_IndexParamPortDefinition, portdef));
-dumpport(spl, splportidx);
-		portdef->nPortIndex = splportidx;
+dumpport(spl, PORT_SPL);
+		portdef->nPortIndex = PORT_SPL;
 		OERR(OMX_SetParameter(spl, OMX_IndexParamPortDefinition,
 			portdef));
-		portdef->nPortIndex = splportidx+1;
+		portdef->nPortIndex = PORT_SPL+1;
 		OERR(OMX_SetParameter(spl, OMX_IndexParamPortDefinition,
 			portdef));
-		portdef->nPortIndex = splportidx+2;
+		portdef->nPortIndex = PORT_SPL+2;
 		OERR(OMX_SetParameter(spl, OMX_IndexParamPortDefinition,
 			portdef));
-		OERR(OMX_SetupTunnel(dec, decportidx+1, spl, splportidx));
-		OERR(OMX_SetupTunnel(spl, splportidx+2, vid, vidportidx));
+		OERR(OMX_SetupTunnel(dec, PORT_DEC+1, spl, PORT_SPL));
+		OERR(OMX_SetupTunnel(spl, PORT_SPL+2, vid, PORT_VID));
 		if (ctx->resize) {
-			OERR(OMX_SetupTunnel(spl, splportidx+1, rsz,
-				rszportidx));
-			OERR(OMX_SetupTunnel(rsz, rszportidx+1, enc,
-				encportidx));
+			OERR(OMX_SetupTunnel(spl, PORT_SPL+1, rsz,
+				PORT_RSZ));
+			OERR(OMX_SetupTunnel(rsz, PORT_RSZ+1, enc,
+				PORT_ENC));
 		} else {
-			OERR(OMX_SetupTunnel(spl, splportidx+1, enc,
-				encportidx));
+			OERR(OMX_SetupTunnel(spl, PORT_SPL+1, enc,
+				PORT_ENC));
 		}
 	} else {
 		if (ctx->resize) {
-			OERR(OMX_SetupTunnel(dec, decportidx+1, rsz,
-				rszportidx));
-			OERR(OMX_SetupTunnel(rsz, rszportidx+1, enc,
-				encportidx));
+			OERR(OMX_SetupTunnel(dec, PORT_DEC+1, rsz,
+				PORT_RSZ));
+			OERR(OMX_SetupTunnel(rsz, PORT_RSZ+1, enc,
+				PORT_ENC));
 			OERR(OMX_SendCommand(rsz, OMX_CommandStateSet,
 				OMX_StateIdle, NULL));
 		} else {
-			OERR(OMX_SetupTunnel(dec, decportidx+1, enc,
-				encportidx));
+			OERR(OMX_SetupTunnel(dec, PORT_DEC+1, enc,
+				PORT_ENC));
 		}
 	}
 	OERR(OMX_SendCommand(enc, OMX_CommandStateSet, OMX_StateIdle, NULL));
@@ -847,30 +846,30 @@ dumpport(spl, splportidx);
 
 	viddef->eCompressionFormat = OMX_VIDEO_CodingAVC;
 	viddef->nStride = viddef->nSliceHeight = viddef->eColorFormat = 0;
-	portdef->nPortIndex = encportidx+1;
+	portdef->nPortIndex = PORT_ENC+1;
 	OERR(OMX_SetParameter(enc, OMX_IndexParamPortDefinition, portdef));
 
 	MAKEME(bitrate, OMX_VIDEO_PARAM_BITRATETYPE);
-	bitrate->nPortIndex = encportidx+1;
+	bitrate->nPortIndex = PORT_ENC+1;
 	bitrate->eControlRate = OMX_Video_ControlRateVariable;
 	bitrate->nTargetBitrate = viddef->nBitrate;
 	OERR(OMX_SetParameter(enc, OMX_IndexParamVideoBitrate, bitrate));
 
 	MAKEME(pfmt, OMX_VIDEO_PARAM_PORTFORMATTYPE);
-	pfmt->nPortIndex = encportidx+1;
+	pfmt->nPortIndex = PORT_ENC+1;
 	pfmt->nIndex = 0;
 	pfmt->eCompressionFormat = OMX_VIDEO_CodingAVC;
 	pfmt->eColorFormat = OMX_COLOR_FormatYUV420PackedPlanar;
 	pfmt->xFramerate = viddef->xFramerate;
 
-	pixaspect->nPortIndex = encportidx+1;
+	pixaspect->nPortIndex = PORT_ENC+1;
 	pixaspect->nX = 64;
 	pixaspect->nY = 45;
 //	OERR(OMX_SetParameter(dec, OMX_IndexParamBrcmPixelAspectRatio, pixaspect));
 
-//		DUMPPORT(enc, encportidx+1); exit(0);
+//		DUMPPORT(enc, PORT_ENC+1); exit(0);
 
-	pfmt->nPortIndex = encportidx+1;
+	pfmt->nPortIndex = PORT_ENC+1;
 	pfmt->nIndex = 1;
 	pfmt->eCompressionFormat = OMX_VIDEO_CodingAVC;
 	pfmt->eColorFormat = 0;
@@ -879,14 +878,14 @@ dumpport(spl, splportidx);
 		pfmt));
 
 	MAKEME(framerate, OMX_CONFIG_FRAMERATETYPE);
-	framerate->nPortIndex = encportidx+1;
+	framerate->nPortIndex = PORT_ENC+1;
 	framerate->xEncodeFramerate = viddef->xFramerate;
 	OERR(OMX_SetParameter(enc, OMX_IndexConfigVideoFramerate, framerate));
 
 #if 0 /* Doesn't seem to apply to video? */
 printf("Interlacing: %d\n", ic->streams[vidindex]->codec->field_order);
 	if (0 || ic->streams[vidindex]->codec->field_order == AV_FIELD_TT) {
-		interlace->nPortIndex = encportidx+1;
+		interlace->nPortIndex = PORT_ENC+1;
 		interlace->eMode = OMX_InterlaceFieldsInterleavedUpperFirst;
 		interlace->bRepeatFirstField = 0;
 		OERR(OMX_SetParameter(enc, OMX_IndexConfigCommonInterlace,
@@ -895,7 +894,7 @@ printf("Interlacing: %d\n", ic->streams[vidindex]->codec->field_order);
 #endif
 
 	MAKEME(level, OMX_VIDEO_PARAM_PROFILELEVELTYPE);
-	level->nPortIndex = encportidx+1;
+	level->nPortIndex = PORT_ENC+1;
 	OERR(OMX_GetParameter(enc, OMX_IndexParamVideoProfileLevelCurrent,
 		level));
 	printf("Current level:\t\t%d\nCurrent profile:\t%d\n",
@@ -903,27 +902,27 @@ printf("Interlacing: %d\n", ic->streams[vidindex]->codec->field_order);
 	OERR(OMX_SetParameter(enc, OMX_IndexParamVideoProfileLevelCurrent,
 		level));
 
-	ctx->encbufs = encbufs = allocbufs(enc, encportidx+1, 1);
-	OERR(OMX_SendCommand(dec, OMX_CommandPortEnable, decportidx+1, NULL));
+	ctx->encbufs = encbufs = allocbufs(enc, PORT_ENC+1, 1);
+	OERR(OMX_SendCommand(dec, OMX_CommandPortEnable, PORT_DEC+1, NULL));
 	if (ctx->resize) {
-		OERR(OMX_SendCommand(rsz, OMX_CommandPortEnable, rszportidx,
+		OERR(OMX_SendCommand(rsz, OMX_CommandPortEnable, PORT_RSZ,
 			NULL));
-		OERR(OMX_SendCommand(rsz, OMX_CommandPortEnable, rszportidx+1,
+		OERR(OMX_SendCommand(rsz, OMX_CommandPortEnable, PORT_RSZ+1,
 			NULL));
 	}
 
-	OERR(OMX_SendCommand(enc, OMX_CommandPortEnable, encportidx, NULL));
+	OERR(OMX_SendCommand(enc, OMX_CommandPortEnable, PORT_ENC, NULL));
 
 	if (ctx->flags & FLAGS_MONITOR) {
-		OERR(OMX_SendCommand(vid, OMX_CommandPortEnable, vidportidx,
+		OERR(OMX_SendCommand(vid, OMX_CommandPortEnable, PORT_VID,
 			NULL));
-		OERR(OMX_SendCommand(spl, OMX_CommandPortEnable, splportidx,
+		OERR(OMX_SendCommand(spl, OMX_CommandPortEnable, PORT_SPL,
 			NULL));
-		OERR(OMX_SendCommand(spl, OMX_CommandPortEnable, splportidx+1,
+		OERR(OMX_SendCommand(spl, OMX_CommandPortEnable, PORT_SPL+1,
 			NULL));
-		OERR(OMX_SendCommand(spl, OMX_CommandPortEnable, splportidx+2,
+		OERR(OMX_SendCommand(spl, OMX_CommandPortEnable, PORT_SPL+2,
 			NULL));
-// sleep(1); printf("\n\n\n\n\n"); for (i = 0; i < 5; i++) dumpport(spl, splportidx+i); sleep(1);
+// sleep(1); printf("\n\n\n\n\n"); for (i = 0; i < 5; i++) dumpport(spl, PORT_SPL+i); sleep(1);
 printf("Pre-sleep.\n"); fflush(stdout);
 		sleep(1);	/* Should probably wait for an event instead */
 printf("Post-sleep.\n"); fflush(stdout);
@@ -942,14 +941,14 @@ printf("Post-sleep.\n"); fflush(stdout);
 	OERR(OMX_FillThisBuffer(enc, encbufs));
 
 /* Dump current port states: */
-	dumpport(dec, decportidx);
-	dumpport(dec, decportidx+1);
+	dumpport(dec, PORT_DEC);
+	dumpport(dec, PORT_DEC+1);
 	if (ctx->resize) {
-		dumpport(rsz, rszportidx);
-		dumpport(rsz, rszportidx+1);
+		dumpport(rsz, PORT_RSZ);
+		dumpport(rsz, PORT_RSZ+1);
 	}
-	dumpport(enc, encportidx);
-	dumpport(enc, encportidx+1);
+	dumpport(enc, PORT_ENC);
+	dumpport(enc, PORT_ENC+1);
 
 /* Make an output context: */
 	ctx->oc = makeoutputcontext(ctx->ic, ctx->oname, ctx->vidindex,
@@ -1009,9 +1008,6 @@ int main(int argc, char *argv[])
 	OMX_BUFFERHEADERTYPE		*decbufs;
 	OMX_VIDEO_PORTDEFINITIONTYPE	*viddef;
 	OMX_VIDEO_PARAM_PROFILELEVELTYPE *level;
-	int		decportidx = 200;
-	int		encportidx = 130;
-	int		rszportidx = 60;
 	time_t		start, end;
 	int		offset;
 	AVPacket	*p, *rp;
@@ -1127,32 +1123,29 @@ int main(int argc, char *argv[])
 	printf("Found %d ports, starting at %d (%x) on decoder\n",
 		porttype->nPorts, porttype->nStartPortNumber,
 		porttype->nStartPortNumber);
-	ctx.decportidx = decportidx = porttype->nStartPortNumber;
 
 	OERR(OMX_GetParameter(enc, OMX_IndexParamVideoInit, porttype));
 	printf("Found %d ports, starting at %d (%x) on encoder\n",
 		porttype->nPorts, porttype->nStartPortNumber,
 		porttype->nStartPortNumber);
-	ctx.encportidx = encportidx = porttype->nStartPortNumber;
 
 	OERR(OMX_GetParameter(rsz, OMX_IndexParamImageInit, porttype));
 	printf("Found %d ports, starting at %d(%x) on resizer\n",
 		porttype->nPorts, porttype->nStartPortNumber,
 		porttype->nStartPortNumber);
-	ctx.rszportidx = rszportidx = porttype->nStartPortNumber;
 
-	OERR(OMX_SendCommand(dec, OMX_CommandPortDisable, decportidx, NULL));
-	OERR(OMX_SendCommand(dec, OMX_CommandPortDisable, decportidx+1, NULL));
-	OERR(OMX_SendCommand(enc, OMX_CommandPortDisable, encportidx, NULL));
-	OERR(OMX_SendCommand(enc, OMX_CommandPortDisable, encportidx+1, NULL));
+	OERR(OMX_SendCommand(dec, OMX_CommandPortDisable, PORT_DEC, NULL));
+	OERR(OMX_SendCommand(dec, OMX_CommandPortDisable, PORT_DEC+1, NULL));
+	OERR(OMX_SendCommand(enc, OMX_CommandPortDisable, PORT_ENC, NULL));
+	OERR(OMX_SendCommand(enc, OMX_CommandPortDisable, PORT_ENC+1, NULL));
 	if (ctx.resize) {
-		OERR(OMX_SendCommand(rsz, OMX_CommandPortDisable, rszportidx,
+		OERR(OMX_SendCommand(rsz, OMX_CommandPortDisable, PORT_RSZ,
 			NULL));
-		OERR(OMX_SendCommand(rsz, OMX_CommandPortDisable, rszportidx+1,
+		OERR(OMX_SendCommand(rsz, OMX_CommandPortDisable, PORT_RSZ+1,
 			NULL));
 	}
 
-	portdef->nPortIndex = decportidx;
+	portdef->nPortIndex = PORT_DEC;
 	OERR(OMX_GetParameter(dec, OMX_IndexParamPortDefinition, portdef));
 	viddef = &portdef->format.video;
 	viddef->nFrameWidth = ic->streams[vidindex]->codec->width;
@@ -1168,13 +1161,13 @@ int main(int argc, char *argv[])
 
 #if 0
 /* It appears these have limited effect: */
-	dataunit->nPortIndex = decportidx;
+	dataunit->nPortIndex = PORT_DEC;
 	dataunit->eUnitType = OMX_DataUnitCodedPicture;
 	dataunit->eEncapsulationType = OMX_DataEncapsulationGenericPayload;
 	OERR(OMX_SetParameter(dec, OMX_IndexParamBrcmDataUnit, dataunit));
 
 	if (ish264) {
-		naltype->nPortIndex = decportidx;
+		naltype->nPortIndex = PORT_DEC;
 		naltype->eNaluFormat = OMX_NaluFormatStartCodes;
 		OERR(OMX_SetParameter(dec, OMX_IndexParamNalStreamFormatSelect,
 			naltype));
@@ -1182,7 +1175,7 @@ int main(int argc, char *argv[])
 #endif
 
 	MAKEME(level, OMX_VIDEO_PARAM_PROFILELEVELTYPE);
-	level->nPortIndex = encportidx+1;
+	level->nPortIndex = PORT_ENC+1;
 /* Dump what the encoder is capable of: */
 	for (oerr = OMX_ErrorNone, i = 0; oerr == OMX_ErrorNone; i++) {
 		pfmt->nIndex = i;
@@ -1219,21 +1212,21 @@ int main(int argc, char *argv[])
 	}
 
 /* Dump current port states: */
-	dumpport(dec, decportidx);
-	dumpport(dec, decportidx+1);
+	dumpport(dec, PORT_DEC);
+	dumpport(dec, PORT_DEC+1);
 	if (ctx.resize) {
-		dumpport(rsz, rszportidx);
-		dumpport(rsz, rszportidx+1);
+		dumpport(rsz, PORT_RSZ);
+		dumpport(rsz, PORT_RSZ+1);
 	}
-	dumpport(enc, encportidx);
-	dumpport(enc, encportidx+1);
+	dumpport(enc, PORT_ENC);
+	dumpport(enc, PORT_ENC+1);
 
 	OERR(OMX_SendCommand(dec, OMX_CommandStateSet, OMX_StateIdle, NULL));
 	if (ctx.resize)
 		OERR(OMX_SendCommand(rsz, OMX_CommandStateSet, OMX_StateIdle,
 			NULL));
 
-	decbufs = allocbufs(dec, decportidx, 1);
+	decbufs = allocbufs(dec, PORT_DEC, 1);
 
 /* Start the initial loop.  Process until we have a state change on port 131 */
 	ctx.decstate = DECINIT;
@@ -1350,10 +1343,10 @@ int main(int argc, char *argv[])
 		case DECFAILED:
 			fprintf(stderr, "Failed to set the parameters after "
 					"%d video frames.  Giving up.\n", i);
-			dumpport(dec, decportidx);
-			dumpport(dec, decportidx+1);
-			dumpport(enc, encportidx);
-			dumpport(enc, encportidx+1);
+			dumpport(dec, PORT_DEC);
+			dumpport(dec, PORT_DEC+1);
+			dumpport(enc, PORT_ENC);
+			dumpport(enc, PORT_ENC+1);
 			exit(1);
 			break;
 		default:
