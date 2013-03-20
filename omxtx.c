@@ -47,6 +47,7 @@
 #include "libavutil/avutil.h"
 #include "libavcodec/avcodec.h"
 #include "libavutil/mathematics.h"
+#include "libavformat/avio.h"
 #include <error.h>
 
 #include "OMX_Video.h"
@@ -65,6 +66,9 @@
 #include <errno.h>
 
 #include <unistd.h>
+
+/* For htonl(): */
+#include <arpa/inet.h>
 
 static OMX_VERSIONTYPE SpecificationVersion = {
 	.s.nVersionMajor = 1,
@@ -634,6 +638,47 @@ static OMX_BUFFERHEADERTYPE *allocbufs(OMX_HANDLETYPE h, int port, int enable)
 
 
 
+/* Convert NALs to non-NALs, as per ff_isom_write_avcc() in avc.c */
+static uint8_t *convertnals(uint8_t *sps, int spssize, uint8_t *pps,
+	int ppssize, int *nlen)
+{
+	uint8_t *buf;
+	int o;
+
+	if (!sps || !pps) {
+		*nlen = 0;
+		return NULL;
+	}
+	sps += 4;
+	pps += 4;
+	spssize -= 4;
+	ppssize -= 4;
+
+	buf = malloc(spssize + ppssize + 16);
+	o = 0;
+	buf[o++] = 1;		/* version */
+	buf[o++] = sps[1];	/* Profile */
+	buf[o++] = sps[2];	/* ...compat */
+	buf[o++] = sps[3];	/* level */
+	buf[o++] = 0xff;	/* 6b res., 2b NAL size -1 */
+	buf[o++] = 0xe1;	/* 3b res., 5b num. SPS (1) */
+	buf[o  ] = htons(spssize);
+	o += 2;
+	memcpy(&buf[o], sps, spssize);
+	o += spssize;
+	buf[o++] = 1;		/* Number of PPS */
+	buf[o  ] = htons(ppssize);
+	o += 2;
+	memcpy(&buf[o], pps, ppssize);
+	o += ppssize;
+
+	printf("SPS (%d) + PPS (%d) (=%d); munged into %d\n", spssize, ppssize, spssize+ppssize, o);
+	*nlen = o;
+	return buf;
+}
+
+
+
 static AVBitStreamFilterContext *dofiltertest(AVPacket *rp)
 {
 	AVBitStreamFilterContext *bsfc;
@@ -1018,6 +1063,8 @@ int main(int argc, char *argv[])
 	off_t		tmpbufoff;
 	AVPacket	**ifb;
 	int		ifbo;
+	uint8_t		*sps, *pps;
+	int		spssize, ppssize;
 
 	if (argc < 3)
 		usage(argv[0]);
@@ -1053,6 +1100,9 @@ int main(int argc, char *argv[])
 	ic = NULL;
 	ish264 = 0;
 	pthread_mutex_init(&ctx.lock, NULL);
+
+	sps = pps = NULL;
+	spssize = ppssize = 0;
 
 #if 0
 	{
@@ -1412,6 +1462,44 @@ int main(int argc, char *argv[])
 				pkt.dts = AV_NOPTS_VALUE; // dts;
 				dts += ctx.frameduration;
 // printf("PTS: %lld %x\n", pkt.pts, spare->nFlags);
+
+
+				if (pkt.data[0] == 0 && pkt.data[1] == 0 &&
+					pkt.data[2] == 0 && pkt.data[3] == 1) {
+					int nt = pkt.data[4] & 0x1f;
+					if (nt == 7) {
+						if (sps)
+							free(sps);
+						sps = malloc(pkt.size);
+						memcpy(sps, pkt.data,
+							pkt.size);
+						spssize = pkt.size;
+						printf("New SPS, length %d\n", spssize);
+					} else if (nt == 8) {
+						if (pps)
+							free(pps);
+						pps = malloc(pkt.size);
+						memcpy(pps, pkt.data,
+							pkt.size);
+						ppssize = pkt.size;
+						printf("New PPS, length %d\n", ppssize);
+					}
+					if (nt == 7 || nt == 8) {
+						AVCodecContext *c;
+						c = oc->streams[vidindex]->codec;
+						if (c->extradata) {
+							av_free(c->extradata);
+							c->extradata = NULL;
+							c->extradata_size = 0;
+						}
+						c->extradata =
+							convertnals(sps,
+								spssize,
+								pps, ppssize,
+								&c->extradata_size);
+					}
+				}
+
 				r = av_interleaved_write_frame(ctx.oc, &pkt);
 				if (r != 0) {
 					char err[256];
