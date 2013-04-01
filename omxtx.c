@@ -1088,6 +1088,7 @@ static void usage(const char *name)
 		"<outfile>\n\n"
 		"Where:\n"
 	"\t-b bitrate\tTarget bitrate in bits/second (default: 2Mb/s)\n"
+	"\t-d\t\tDeinterlace\n"
 	"\t-m\t\tMonitor.  Display the decoder's output\n"
 	"\t-r size\t\tResize output.  'size' is either a percentage, or XXxYY\n"
 	"\n", name);
