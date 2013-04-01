@@ -368,6 +368,8 @@ printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.d
 			c = avcodec_find_encoder(iflow->codec->codec_id);
 			oflow = avformat_new_stream(oc, c);
 			avcodec_copy_context(oflow->codec, iflow->codec);
+		/* Apparently fixes a crash on .mkvs with attachments: */
+			av_dict_copy(&oflow->metadata, iflow->metadata, 0);
 		}
 	}
 	for (i = 0; i < oc->nb_streams; i++) {
