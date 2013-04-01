@@ -94,7 +94,8 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 					exit(1);			\
 				} else {				\
 					fprintf(stderr, #cmd		\
-						" completed OK.\n");	\
+						" completed at %d.\n",	\
+						__LINE__);		\
 				}					\
 			} while (0)
 
@@ -113,12 +114,14 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 #define RSZNAME "OMX.broadcom.resize"
 #define VIDNAME "OMX.broadcom.video_render"
 #define SPLNAME "OMX.broadcom.video_splitter"
+#define DEINAME	"OMX.broadcom.image_fx"
 
 /* portbase for the modules, could also be queried, but as the components are broadcom/raspberry
    specific anyway... */
 #define PORT_RSZ  60
 #define PORT_VID  90
 #define PORT_DEC 130
+#define PORT_DEI 190
 #define PORT_ENC 200
 #define PORT_SPL 250
 
@@ -152,7 +155,7 @@ static struct context {
 	volatile enum states	decstate;
 	volatile enum states	encstate;
 	int		vidindex;
-	OMX_HANDLETYPE	dec, enc, rsz;
+	OMX_HANDLETYPE	dec, enc, rsz, dei;
 	pthread_mutex_t	lock;
 	AVBitStreamFilterContext *bsfc;
 	int		bitrate;
@@ -163,6 +166,7 @@ static struct context {
 #define FLAGS_VERBOSE		(1<<0)
 #define FLAGS_DECEMPTIEDBUF	(1<<1)
 #define FLAGS_MONITOR		(1<<2)
+#define FLAGS_DEINTERLACE	(1<<3)
 
 
 
@@ -375,7 +379,7 @@ printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.d
 	}
 
 printf("\n\n\nInput:\n");
-	av_dump_format(ic, 0, oname, 0);
+	av_dump_format(ic, 0, ic->filename, 0);
 printf("\n\n\nOutput:\n");
 	av_dump_format(oc, 0, oname, 1);
 
@@ -745,20 +749,31 @@ static void configure(struct context *ctx, AVPacket **ifb)
 	OMX_IMAGE_PORTDEFINITIONTYPE	*imgdef;
 	OMX_VIDEO_PARAM_PORTFORMATTYPE	*pfmt;
 	OMX_CONFIG_POINTTYPE		*pixaspect;
-	OMX_HANDLETYPE			dec, enc, rsz, spl, vid;
+	OMX_HANDLETYPE			dec, enc, rsz, spl, vid, dei;
+	OMX_HANDLETYPE			prev;
+	int				pp;
 	int				x, y;
 	int				i;
+/* omxplayer does this: */
+	OMX_PARAM_U32TYPE		*extra_buffers;
+	OMX_CONFIG_IMAGEFILTERPARAMSTYPE *image_filter;
 
 	MAKEME(portdef, OMX_PARAM_PORTDEFINITIONTYPE);
 	MAKEME(imgportdef, OMX_PARAM_PORTDEFINITIONTYPE);
 	MAKEME(pixaspect, OMX_CONFIG_POINTTYPE);
+	MAKEME(extra_buffers, OMX_PARAM_U32TYPE);
+	MAKEME(image_filter, OMX_CONFIG_IMAGEFILTERPARAMSTYPE);
 
 /* These just save a bit of typing.  No other reason. */
 	dec = ctx->dec;
 	enc = ctx->enc;
 	rsz = ctx->rsz;
+	dei = ctx->dei;
 	viddef = &portdef->format.video;
 	imgdef = &imgportdef->format.image;
+
+	prev = dec;
+	pp = PORT_DEC+1;
 
 	printf("Decoder has changed settings.  Setting up encoder.\n");
 
@@ -775,6 +790,57 @@ static void configure(struct context *ctx, AVPacket **ifb)
 /* Get the decoder port state...: */
 	portdef->nPortIndex = PORT_DEC+1;
 	OERR(OMX_GetParameter(dec, OMX_IndexParamPortDefinition, portdef));
+
+/* Deinterlacer: */
+	if (ctx->flags & FLAGS_DEINTERLACE) {
+		OERR(OMX_SendCommand(dei, OMX_CommandStateSet, OMX_StateIdle,
+			NULL));
+		portdef->nPortIndex = PORT_DEI;
+		OERR(OMX_SendCommand(dei, OMX_CommandPortDisable,
+				PORT_DEI, NULL));
+		OERR(OMX_SendCommand(dei, OMX_CommandPortDisable,
+				PORT_DEI+1, NULL));
+		OERR(OMX_SetParameter(dei, OMX_IndexParamPortDefinition,
+			portdef));
+		portdef->nPortIndex = PORT_DEI+1;
+		OERR(OMX_SetParameter(dei, OMX_IndexParamPortDefinition,
+			portdef));
+
+/* omxplayer does this: */
+		extra_buffers->nU32 = 3;
+		extra_buffers->nPortIndex = pp;
+		OERR(OMX_SetParameter(prev, OMX_IndexParamBrcmExtraBuffers,
+			extra_buffers));
+		image_filter->nPortIndex = PORT_DEI+1;
+		image_filter->nNumParams = 1;
+		image_filter->nParams[0] = 3;
+		image_filter->eImageFilter = OMX_ImageFilterDeInterlaceAdvanced;
+		OERR(OMX_SetConfig(dei,
+			OMX_IndexConfigCommonImageFilterParameters,
+			image_filter));
+
+		imgportdef->nPortIndex = PORT_DEI;
+		OERR(OMX_GetParameter(dei, OMX_IndexParamPortDefinition,
+			imgportdef));
+		portdef->nPortIndex = PORT_ENC;
+		viddef->nFrameWidth = imgdef->nFrameWidth;
+		viddef->nFrameHeight = imgdef->nFrameHeight;
+		viddef->nStride = imgdef->nStride;
+		viddef->nSliceHeight = imgdef->nSliceHeight;
+		viddef->bFlagErrorConcealment = imgdef->bFlagErrorConcealment;
+		viddef->eCompressionFormat = imgdef->eCompressionFormat;
+		viddef->eColorFormat = imgdef->eColorFormat;
+		viddef->pNativeWindow = imgdef->pNativeWindow;
+
+		dumpport(dei, 190);
+		dumpport(dei, 191);
+//		allocbufs(dei, PORT_DEI+1, 0);
+
+		OERR(OMX_SetupTunnel(prev, pp, dei, PORT_DEI));
+		prev = dei;
+		pp = PORT_DEI + 1;
+	}
+
 	if (ctx->resize) {
 		imgportdef->nPortIndex = PORT_RSZ;
 		OERR(OMX_GetParameter(rsz, OMX_IndexParamPortDefinition,
@@ -830,6 +896,7 @@ static void configure(struct context *ctx, AVPacket **ifb)
 		viddef->eColorFormat = imgdef->eColorFormat;
 		viddef->pNativeWindow = imgdef->pNativeWindow;
 	}
+
 /* ... and feed it to the encoder: */
 	portdef->nPortIndex = PORT_ENC;
 	OERR(OMX_SetParameter(enc, OMX_IndexParamPortDefinition, portdef));
@@ -852,31 +919,20 @@ dumpport(spl, PORT_SPL);
 		portdef->nPortIndex = PORT_SPL+2;
 		OERR(OMX_SetParameter(spl, OMX_IndexParamPortDefinition,
 			portdef));
-		OERR(OMX_SetupTunnel(dec, PORT_DEC+1, spl, PORT_SPL));
+		OERR(OMX_SetupTunnel(prev, pp, spl, PORT_SPL));
 		OERR(OMX_SetupTunnel(spl, PORT_SPL+2, vid, PORT_VID));
-		if (ctx->resize) {
-			OERR(OMX_SetupTunnel(spl, PORT_SPL+1, rsz,
-				PORT_RSZ));
-			OERR(OMX_SetupTunnel(rsz, PORT_RSZ+1, enc,
-				PORT_ENC));
-		} else {
-			OERR(OMX_SetupTunnel(spl, PORT_SPL+1, enc,
-				PORT_ENC));
-		}
-	} else {
-		if (ctx->resize) {
-			OERR(OMX_SetupTunnel(dec, PORT_DEC+1, rsz,
-				PORT_RSZ));
-			OERR(OMX_SetupTunnel(rsz, PORT_RSZ+1, enc,
-				PORT_ENC));
-			OERR(OMX_SendCommand(rsz, OMX_CommandStateSet,
-				OMX_StateIdle, NULL));
-		} else {
-			OERR(OMX_SetupTunnel(dec, PORT_DEC+1, enc,
-				PORT_ENC));
-		}
+		prev = spl;
+		pp = PORT_SPL+1;
+	}
+	if (ctx->resize) {
+		OERR(OMX_SetupTunnel(prev, pp, rsz, PORT_RSZ));
+		prev = rsz;
+		pp = PORT_RSZ+1;
 	}
 	OERR(OMX_SendCommand(enc, OMX_CommandStateSet, OMX_StateIdle, NULL));
+	dumpport(prev, pp);
+	dumpport(enc, PORT_ENC);
+	OERR(OMX_SetupTunnel(prev, pp, enc, PORT_ENC));
 
 	if (ctx->bitrate == 0) {
 		viddef->nBitrate *= 3;
@@ -977,6 +1033,19 @@ printf("Post-sleep.\n"); fflush(stdout);
 			OMX_StateExecuting, NULL));
 	}
 
+	if (ctx->flags & FLAGS_DEINTERLACE) {
+		OERR(OMX_SendCommand(dei, OMX_CommandPortEnable, PORT_DEI,
+			NULL));
+		OERR(OMX_SendCommand(dei, OMX_CommandPortEnable, PORT_DEI+1,
+			NULL));
+/* This is another port-changed event I should wait for: */
+		sleep(1);
+		dumpport(dei, 190);
+		dumpport(dei, 191);
+		OERR(OMX_SendCommand(dei, OMX_CommandStateSet,
+			OMX_StateExecuting, NULL));
+	}
+
 	if (ctx->resize)
 		OERR(OMX_SendCommand(rsz, OMX_CommandStateSet,
 			OMX_StateExecuting, NULL));
@@ -1046,7 +1115,7 @@ int main(int argc, char *argv[])
 	int		vidindex;
 	int		i, j;
 	OMX_ERRORTYPE	oerr;
-	OMX_HANDLETYPE	dec = NULL, enc = NULL, rsz = NULL;
+	OMX_HANDLETYPE	dec = NULL, enc = NULL, rsz = NULL, dei = NULL;
 	OMX_VIDEO_PARAM_PORTFORMATTYPE	*pfmt;
 	OMX_PORT_PARAM_TYPE		*porttype;
 	OMX_PARAM_PORTDEFINITIONTYPE	*portdef;
@@ -1071,10 +1140,13 @@ int main(int argc, char *argv[])
 
 	ctx.bitrate = 2*1024*1024;
 
-	while ((opt = getopt(argc, argv, "b:mr:")) != -1) {
+	while ((opt = getopt(argc, argv, "b:dmr:")) != -1) {
 		switch (opt) {
 		case 'b':
 			ctx.bitrate = atoi(optarg);
+			break;
+		case 'd':
+			ctx.flags |= FLAGS_DEINTERLACE;
 			break;
 		case 'm':
 			ctx.flags |= FLAGS_MONITOR;
@@ -1162,9 +1234,11 @@ int main(int argc, char *argv[])
 	OERR(OMX_GetHandle(&dec, DECNAME, &ctx, &decevents));
 	OERR(OMX_GetHandle(&enc, ENCNAME, &ctx, &encevents));
 	OERR(OMX_GetHandle(&rsz, RSZNAME, &ctx, &rszevents));
+	OERR(OMX_GetHandle(&dei, DEINAME, &ctx, &genevents));
 	ctx.dec = dec;
 	ctx.enc = enc;
 	ctx.rsz = rsz;
+	ctx.dei = dei;
 
 	printf("Obtained handles.  %p decode, %p encode\n",
 		dec, enc);
