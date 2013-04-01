@@ -1084,7 +1084,7 @@ printf("Post-sleep.\n"); fflush(stdout);
 
 static void usage(const char *name)
 {
-	fprintf(stderr, "Usage: %s [-b bitrate] [-m] [-r size] <infile> "
+	fprintf(stderr, "Usage: %s [-b bitrate] [-d] [-m] [-r size] <infile> "
 		"<outfile>\n\n"
 		"Where:\n"
 	"\t-b bitrate\tTarget bitrate in bits/second (default: 2Mb/s)\n"
