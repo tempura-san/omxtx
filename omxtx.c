@@ -78,10 +78,10 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 };
 
 /* Hateful things: */
-#define MAKEME(y, x)	do {                        \
-				y = calloc(1, sizeof(x));           \
-				y->nSize = sizeof(x);               \
-				y->nVersion = SpecificationVersion; \
+#define MAKEME(y, x)	do {						\
+				y = calloc(1, sizeof(x));		\
+				y->nSize = sizeof(x);			\
+				y->nVersion = SpecificationVersion;	\
 			} while (0)
 
 
@@ -167,6 +167,7 @@ static struct context {
 #define FLAGS_DECEMPTIEDBUF	(1<<1)
 #define FLAGS_MONITOR		(1<<2)
 #define FLAGS_DEINTERLACE	(1<<3)
+#define FLAGS_RAW		(1<<4)
 
 
 
@@ -739,8 +740,8 @@ static AVPacket *filter(struct context *ctx, AVPacket *rp)
 
 static void configure(struct context *ctx, AVPacket **ifb)
 {
-	pthread_t	fpst;
-	pthread_attr_t	fpsa;
+	pthread_t			fpst;
+	pthread_attr_t			fpsa;
 	OMX_CONFIG_FRAMERATETYPE	*framerate;
 	OMX_VIDEO_PARAM_PROFILELEVELTYPE *level;
 	OMX_VIDEO_PARAM_BITRATETYPE	*bitrate;
@@ -1066,12 +1067,14 @@ printf("Post-sleep.\n"); fflush(stdout);
 	dumpport(enc, PORT_ENC);
 	dumpport(enc, PORT_ENC+1);
 
-/* Make an output context: */
-	ctx->oc = makeoutputcontext(ctx->ic, ctx->oname, ctx->vidindex,
-		portdef, ifb);
-	if (!ctx->oc) {
-		fprintf(stderr, "Whoops.\n");
-		exit(1);
+/* Make an output context, possibly: */
+	if ((ctx->flags & FLAGS_RAW) == 0) {
+		ctx->oc = makeoutputcontext(ctx->ic, ctx->oname, ctx->vidindex,
+			portdef, ifb);
+		if (!ctx->oc) {
+			fprintf(stderr, "Whoops.\n");
+			exit(1);
+		}
 	}
 
 	atexit(dumpportstate);
@@ -1091,6 +1094,9 @@ static void usage(const char *name)
 	"\t-d\t\tDeinterlace\n"
 	"\t-m\t\tMonitor.  Display the decoder's output\n"
 	"\t-r size\t\tResize output.  'size' is either a percentage, or XXxYY\n"
+	"\n"
+	"Output container is guessed based on filename.  Use '.nal' for raw"
+	" output.\n"
 	"\n", name);
 	exit(1);
 }
@@ -1137,6 +1143,7 @@ int main(int argc, char *argv[])
 	int		ifbo;
 	uint8_t		*sps, *pps;
 	int		spssize, ppssize;
+	int		fd;
 
 	if (argc < 3)
 		usage(argv[0]);
@@ -1165,6 +1172,17 @@ int main(int argc, char *argv[])
 	iname = argv[optind++];
 	oname = argv[optind++];
 	ctx.oname = oname;
+	j = strlen(oname);
+	if (strncmp(&oname[j-4], ".nal", 4) == 0) {
+		ctx.flags |= FLAGS_RAW;
+		fd = open(oname, O_CREAT|O_TRUNC|O_WRONLY, 0777);
+		if (fd == -1) {
+			fprintf(stderr,
+				"Failed to open the output: %s\n",
+				strerror(errno));
+			exit(1);
+		}
+	}
 
 	MAKEME(porttype, OMX_PORT_PARAM_TYPE);
 	MAKEME(portdef, OMX_PARAM_PORTDEFINITIONTYPE);
@@ -1402,7 +1420,7 @@ int main(int argc, char *argv[])
 						rp);
 					if (r < 0)
 						printf("r: %d\n", r);
-				} else {
+				} else if ((ctx.flags & FLAGS_RAW) == 0) {
 					AVPacket *np;
 					ifb = realloc(ifb,
 						sizeof(AVPacket *)*(ifbo+2));
@@ -1415,6 +1433,8 @@ int main(int argc, char *argv[])
 					np->side_data = NULL;
 					np->side_data_elems = 0;
 					np->pos = -1;
+					av_free_packet(rp);
+				} else {
 					av_free_packet(rp);
 				}
 				continue;
@@ -1490,6 +1510,17 @@ int main(int argc, char *argv[])
 				AVPacket pkt;
 				int r;
 				OMX_TICKS tick = spare->nTimeStamp;
+
+				if (ctx.flags & FLAGS_RAW) {
+					write(fd,
+						&spare->pBuffer[spare->nOffset],
+						spare->nFilledLen);
+					spare->nFilledLen = 0;
+					spare->nOffset = 0;
+					OERRq(OMX_FillThisBuffer(enc, spare));
+					spare = spare->pAppPrivate;
+					continue;
+				}
 
 				if ((spare->nFlags & OMX_BUFFERFLAG_ENDOFNAL)
 					== 0) {
