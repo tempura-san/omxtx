@@ -1663,12 +1663,16 @@ int main(int argc, char *argv[])
 	printf("Processed %d frames in %d seconds; %df/s\n\n\n",
 		ctx.framecount, end-start, (ctx.framecount/(end-start)));
 
-	av_write_trailer(oc);
+	if (oc) {
+		av_write_trailer(oc);
 
-	for (i = 0; i < oc->nb_streams; i++)
-		avcodec_close(oc->streams[i]->codec);
+		for (i = 0; i < oc->nb_streams; i++)
+			avcodec_close(oc->streams[i]->codec);
 
-	avio_close(oc->pb);
+		avio_close(oc->pb);
+	} else {
+		close(fd);
+	}
 
 	return 0;
 }
