@@ -1173,7 +1173,8 @@ int main(int argc, char *argv[])
 	oname = argv[optind++];
 	ctx.oname = oname;
 	j = strlen(oname);
-	if (strncmp(&oname[j-4], ".nal", 4) == 0) {
+	if (strncmp(&oname[j-4], ".nal", 4) == 0 ||
+		strncmp(&oname[j-4], ".264", 4) == 0) {
 		ctx.flags |= FLAGS_RAW;
 		fd = open(oname, O_CREAT|O_TRUNC|O_WRONLY, 0777);
 		if (fd == -1) {
