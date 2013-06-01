@@ -1,6 +1,7 @@
 /* omxtx.c
  *
- * (c) 2012 Dickon Hood <dickon@fluff.org>
+ * (c) 2012, 2013 Dickon Hood <dickon@fluff.org>
+ * Timing fixups by Adam Charrett <adam@dvbstreamer.org>
  *
  * A trivial OpenMAX transcoder for the Pi.
  *
@@ -8,7 +9,7 @@
  * particularly pretty output, and is probably buggier than a swamp in
  * summer.  Beware of memory leaks.
  *
- * Usage: ./omxtx [-b bitrate] [-r size] input.foo output.m4v
+ * Usage: ./omxtx [-b bitrate] [-r size] [-x] [-d] input.foo output.m4v
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,12 +28,7 @@
 
 /* To do:
  *
- *  *  Flush the buffers at the end
- *  *  Sort out the PTSes
- *  *  Read up on buffer timings in general
- *  *  Feed the packets to AVFormat rather than dumping them raw to disc
- *  *  Interleave correctly with the other AV packets in the stream, rather
- *     than just dropping them entirely
+ *  *  Move to an event-driven setup, rather than waiting.
  */
 
 #define _BSD_SOURCE
@@ -41,6 +37,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include "bcm_host.h"
 #include "libavformat/avformat.h"
@@ -60,6 +57,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/queue.h>
 #include <fcntl.h>
 
 #include <time.h>
@@ -108,6 +106,19 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 			} while (0)
 /* ... but damn useful.*/
 
+#define V_ALWAYS	0
+#define V_INFO		1
+#define V_LOTS		2
+
+/* Not vprintf(); there's already one of those in libc... */
+#define logprintf(v, ...) \
+    do { \
+        if ((v) <= ctx.verbosity) { \
+            printf( __VA_ARGS__); \
+        } \
+    } while (0)
+
+
 /* Hardware component names: */
 #define ENCNAME "OMX.broadcom.video_encode"
 #define DECNAME "OMX.broadcom.video_decode"
@@ -116,8 +127,10 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 #define SPLNAME "OMX.broadcom.video_splitter"
 #define DEINAME	"OMX.broadcom.image_fx"
 
-/* portbase for the modules, could also be queried, but as the components are broadcom/raspberry
-   specific anyway... */
+/*
+ * Portbase for the modules, could also be queried, but as the components
+ * are broadcom/raspberry specific anyway...
+ */
 #define PORT_RSZ  60
 #define PORT_VID  90
 #define PORT_DEC 130
@@ -136,7 +149,20 @@ enum states {
 	ENCINIT,
 	ENCGOTBUF,
 	ENCDONE,
+	ENCSPSPPS,
+	ENCRUNNING,
 };
+
+
+
+struct packetentry {
+	TAILQ_ENTRY(packetentry) link;
+	AVPacket packet;
+};
+
+TAILQ_HEAD(packetqueue, packetentry);
+
+static struct packetqueue packetq;
 
 
 
@@ -155,6 +181,7 @@ static struct context {
 	volatile enum states	decstate;
 	volatile enum states	encstate;
 	int		vidindex;
+	int		*outindex;
 	OMX_HANDLETYPE	dec, enc, rsz, dei;
 	pthread_mutex_t	lock;
 	AVBitStreamFilterContext *bsfc;
@@ -162,12 +189,15 @@ static struct context {
 	char		*resize;
 	char		*oname;
 	double		frameduration;
+	int		verbosity;
+	int64_t		ptsoff;
 } ctx;
 #define FLAGS_VERBOSE		(1<<0)
 #define FLAGS_DECEMPTIEDBUF	(1<<1)
 #define FLAGS_MONITOR		(1<<2)
 #define FLAGS_DEINTERLACE	(1<<3)
 #define FLAGS_RAW		(1<<4)
+#define FLAGS_NOSUBS		(1<<5)
 
 
 
@@ -298,8 +328,7 @@ static const char *mapcomponent(struct context *ctx, OMX_HANDLETYPE h)
 
 
 static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
-	const char *oname, int idx, const OMX_PARAM_PORTDEFINITIONTYPE *prt,
-	AVPacket **ifb)
+	const char *oname, int idx, const OMX_PARAM_PORTDEFINITIONTYPE *prt)
 {
 	AVFormatContext			*oc;
 	AVOutputFormat			*fmt;
@@ -308,8 +337,7 @@ static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
 	AVCodec				*c;
 	AVCodecContext			*cc;
 	const OMX_VIDEO_PORTDEFINITIONTYPE	*viddef;
-	int				r;
-	char				err[256];
+	int				streamindex = 0;
 
 	viddef = &prt->format.video;
 
@@ -333,45 +361,63 @@ static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
 	oc->oformat = fmt;
 	snprintf(oc->filename, sizeof(oc->filename), "%s", oname);
 	oc->debug = 1;
-	oc->start_time_realtime = ic->start_time_realtime;
+	oc->start_time_realtime = ic->start_time;
 	oc->start_time = ic->start_time;
+	oc->duration = 0;
+	ctx.outindex = calloc(ic->nb_streams, sizeof(int));
+	oc->bit_rate = 0;
 
 #define ETB(x) x.num, x.den
 	for (i = 0; i < ic->nb_streams; i++) {
 		iflow = ic->streams[i];
 		if (i == idx) {	/* My new H.264 stream. */
 			c = avcodec_find_encoder(CODEC_ID_H264);
+			ctx.outindex[i] = streamindex++;
 printf("Found a codec at %p\n", c);
 			oflow = avformat_new_stream(oc, c);
 printf("Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d, ticks: %d; %d %lld/%lld\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate), oflow->codec->ticks_per_frame, iflow->codec->ticks_per_frame, oc->start_time_realtime, ic->start_time_realtime);
 			cc = oflow->codec;
 			cc->width = viddef->nFrameWidth;
 			cc->height = viddef->nFrameHeight;
-			cc->time_base = iflow->codec->time_base;
 			cc->codec_id = CODEC_ID_H264;
 			cc->codec_type = AVMEDIA_TYPE_VIDEO;
-			cc->max_b_frames = 12;	/* Probably wrong */
-			cc->has_b_frames = 1;
-			cc->gop_size = 200;
-			cc->pix_fmt = PIX_FMT_YUV420P;
 			cc->bit_rate = ctx.bitrate;
 			cc->profile = FF_PROFILE_H264_HIGH;
 			cc->level = 41;
+			cc->time_base = iflow->codec->time_base;
+
 			oflow->avg_frame_rate = iflow->avg_frame_rate;
 			oflow->r_frame_rate = iflow->r_frame_rate;
-			oflow->time_base = iflow->time_base;
-			cc->flags = CODEC_FLAG2_LOCAL_HEADER;
-			oflow->start_time = iflow->start_time;
+			oflow->start_time = AV_NOPTS_VALUE;
+
+			if (!ctx.resize) {
+				cc->sample_aspect_ratio.num =
+				    iflow->codec->sample_aspect_ratio.num;
+				cc->sample_aspect_ratio.den =
+				    iflow->codec->sample_aspect_ratio.den;
+				oflow->sample_aspect_ratio.num =
+				    iflow->codec->sample_aspect_ratio.num;
+				oflow->sample_aspect_ratio.den =
+				    iflow->codec->sample_aspect_ratio.den;
+			}
+
 printf("Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate));
 printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.den, oflow->r_frame_rate.num, oflow->r_frame_rate.den);
-//			oflow->sample_aspect_ratio = iflow->sample_aspect_ratio;
 		} else { 	/* Something pre-existing. */
+			if ((ctx.flags & FLAGS_NOSUBS) &&
+				iflow->codec->codec_type !=
+					AVMEDIA_TYPE_AUDIO) {
+				ctx.outindex[i] = -1;
+				continue;
+			}
+			ctx.outindex[i] = streamindex++;
 			c = avcodec_find_encoder(iflow->codec->codec_id);
 			oflow = avformat_new_stream(oc, c);
 			avcodec_copy_context(oflow->codec, iflow->codec);
-		/* Apparently fixes a crash on .mkvs with attachments: */
+/* Apparently fixes a crash on .mkvs with attachments: */
 			av_dict_copy(&oflow->metadata, iflow->metadata, 0);
-			oflow->codec->codec_tag = 0; /* Reset the codec tag so as not to cause problems with output format */
+/* Reset the codec tag so as not to cause problems with output format */
+			oflow->codec->codec_tag = 0; 
 		}
 	}
 	for (i = 0; i < oc->nb_streams; i++) {
@@ -387,40 +433,89 @@ printf("\n\n\nInput:\n");
 printf("\n\n\nOutput:\n");
 	av_dump_format(oc, 0, oname, 1);
 
+	return oc;
+}
+
+
+
+static void writenonvideopacket(AVPacket *pkt)
+{
+	int index = pkt->stream_index;
+	int outindex = ctx.outindex[index];
+
+	if (outindex != -1) {
+		pkt->stream_index = outindex;
+		if (pkt->pts != AV_NOPTS_VALUE) {
+			pkt->pts =
+			    av_rescale_q(pkt->pts,
+					 ctx.ic->streams[index]->time_base,
+					 ctx.oc->streams[outindex]->time_base);
+			pkt->pts -= ctx.ptsoff;
+		}
+
+		if (pkt->dts != AV_NOPTS_VALUE) {
+			pkt->dts =
+			    av_rescale_q(pkt->dts,
+					 ctx.ic->streams[index]->time_base,
+					 ctx.oc->streams[outindex]->time_base);
+			pkt->dts -= ctx.ptsoff;
+		}
+		logprintf(V_LOTS, "Other PTS %lld\n", pkt->pts);
+		av_interleaved_write_frame(ctx.oc, pkt);
+	} else {
+		av_free_packet(pkt);
+	}
+	
+}
+
+
+
+static void openoutput(struct context *ctx)
+{
+	int i;
+	int r;
+	int outindex;
+	struct packetentry *packet, *next;
+	AVFormatContext *oc;
+	char err[256];
+
+	oc = ctx->oc;
 /* At some point they changed the API: */
 #ifndef URL_WRONLY
 #define URL_WRONLY AVIO_FLAG_WRITE
 #endif
-	avio_open(&oc->pb, oname, URL_WRONLY);
+	avio_open(&oc->pb, ctx->oname, URL_WRONLY);
 
 	r = avformat_write_header(oc, NULL);
 	if (r < 0) {
 		av_strerror(r, err, sizeof(err));
-		printf("Failed to write header: %s\n", err);
+		fprintf(stderr, "Failed to write header: %s\n", err);
 		exit(1);
 	}
 
 	printf("Writing initial frame buffer contents out...");
-	for (i = 0; ifb[i]; i++) {
-		AVPacket *rp;
-		int index;
-		rp = ifb[i];
-		index = rp->stream_index;
 
-		if (rp->pts != AV_NOPTS_VALUE)
-			rp->pts = av_rescale_q(rp->pts,
-				ic->streams[index]->time_base,
-				oc->streams[index]->time_base);
-		if (rp->dts != AV_NOPTS_VALUE)
-			rp->dts = av_rescale_q(rp->dts,
-				ic->streams[index]->time_base,
-				oc->streams[index]->time_base);
-		av_interleaved_write_frame(oc, rp);
+	outindex = ctx->outindex[ctx->vidindex];
+	ctx->ptsoff =
+	    av_rescale_q(ctx->ic->start_time, AV_TIME_BASE_Q,
+			 oc->streams[outindex]->time_base);
+
+	for (i = 0, packet = TAILQ_FIRST(&packetq); packet; packet = next) {
+		next = TAILQ_NEXT(packet, link);
+
+		if (packet->packet.stream_index == ctx->vidindex) {
+			av_free_packet(&packet->packet);
+		} else {
+			writenonvideopacket(&packet->packet);
+			i++;
+		}
+		TAILQ_REMOVE(&packetq, packet, link);
+		free(packet);
 	}
 
 	printf(" ...done.  Wrote %d frames.\n\n", i);
 
-	return oc;
+	return;
 }
 
 
@@ -646,47 +741,6 @@ static OMX_BUFFERHEADERTYPE *allocbufs(OMX_HANDLETYPE h, int port, int enable)
 
 
 
-/* Convert NALs to non-NALs, as per ff_isom_write_avcc() in avc.c */
-static uint8_t *convertnals(uint8_t *sps, int spssize, uint8_t *pps,
-	int ppssize, int *nlen)
-{
-	uint8_t *buf;
-	int o;
-
-	if (!sps || !pps) {
-		*nlen = 0;
-		return NULL;
-	}
-	sps += 4;
-	pps += 4;
-	spssize -= 4;
-	ppssize -= 4;
-
-	buf = malloc(spssize + ppssize + 16);
-	o = 0;
-	buf[o++] = 1;		/* version */
-	buf[o++] = sps[1];	/* Profile */
-	buf[o++] = sps[2];	/* ...compat */
-	buf[o++] = sps[3];	/* level */
-	buf[o++] = 0xff;	/* 6b res., 2b NAL size -1 */
-	buf[o++] = 0xe1;	/* 3b res., 5b num. SPS (1) */
-	buf[o  ] = htons(spssize);
-	o += 2;
-	memcpy(&buf[o], sps, spssize);
-	o += spssize;
-	buf[o++] = 1;		/* Number of PPS */
-	buf[o  ] = htons(ppssize);
-	o += 2;
-	memcpy(&buf[o], pps, ppssize);
-	o += ppssize;
-
-	printf("SPS (%d) + PPS (%d) (=%d); munged into %d\n", spssize, ppssize, spssize+ppssize, o);
-	*nlen = o;
-	return buf;
-}
-
-
-
 static AVBitStreamFilterContext *dofiltertest(AVPacket *rp)
 {
 	AVBitStreamFilterContext *bsfc;
@@ -727,8 +781,10 @@ static AVPacket *filter(struct context *ctx, AVPacket *rp)
 			fp->destruct = av_destruct_packet;
 			p = fp;
 		} else {
+			char err[256];
 			printf("Failed to filter frame: "
-				"%d (%x)\n", rc, rc);
+				"%d (%x): %s\n", rc, rc,
+				av_make_error_string(err, sizeof(err), rc));
 			p = rp;
 		}
 	} else
@@ -739,7 +795,7 @@ static AVPacket *filter(struct context *ctx, AVPacket *rp)
 
 
 
-static void configure(struct context *ctx, AVPacket **ifb)
+static void configure(struct context *ctx)
 {
 	pthread_t			fpst;
 	pthread_attr_t			fpsa;
@@ -1071,7 +1127,7 @@ printf("Post-sleep.\n"); fflush(stdout);
 /* Make an output context, possibly: */
 	if ((ctx->flags & FLAGS_RAW) == 0) {
 		ctx->oc = makeoutputcontext(ctx->ic, ctx->oname, ctx->vidindex,
-			portdef, ifb);
+			portdef);
 		if (!ctx->oc) {
 			fprintf(stderr, "Whoops.\n");
 			exit(1);
@@ -1104,6 +1160,40 @@ static void usage(const char *name)
 
 
 
+static int parsebitrate(const char *s)
+{
+	float rate;
+	char specifier;
+	int r;
+
+	r = sscanf(s, "%f%c", &rate, &specifier);
+	switch (r) {
+	case 1:
+		return (int)rate;
+	case 2:
+		switch (specifier) {
+		case 'K':
+		case 'k':
+			return (int)(rate * 1024.0);
+		case 'M':
+		case 'm':
+			return (int)(rate * 1024.0 * 1024.0);
+		default:
+			fprintf(stderr, "Unrecognised bitrate specifier!\n");
+			exit(1);
+			break;
+		}
+		break;
+	default:
+		fprintf(stderr, "Failed to parse bitrate!\n");
+		exit(1);
+		break;
+	}
+	return 0;
+}
+
+
+
 static void freepacket(AVPacket *p)
 {
 	if (p->data)
@@ -1112,6 +1202,42 @@ static void freepacket(AVPacket *p)
 	p->destruct = av_destruct_packet;
 	av_free_packet(p);
 }
+
+
+
+static int getnextvideopacket(AVPacket *pkt)
+{
+	int rc;
+	do {
+		rc = av_read_frame(ctx.ic, pkt);
+		if (rc == 0) {
+			if (pkt->stream_index != ctx.vidindex) {
+
+				if (ctx.decstate == ENCRUNNING) {
+					writenonvideopacket(pkt);
+				} else if ((ctx.flags & FLAGS_RAW) == 0) {
+					/*
+					   Save packet for when we open the output file 
+					 */
+					struct packetentry *entry;
+					entry =
+					    malloc(sizeof(struct packetentry));
+					entry->packet = *pkt;
+					TAILQ_INSERT_TAIL(&packetq, entry,
+							  link);
+					/*
+					   We've copied out the contents of the packet so re-initialise 
+					 */
+					av_init_packet(pkt);
+				} else {
+					av_free_packet(pkt);
+				}
+			}
+		}
+	} while ((rc == 0) && (pkt->stream_index != ctx.vidindex));
+	return rc;
+}
+
 
 
 
@@ -1140,8 +1266,6 @@ int main(int argc, char *argv[])
 	int		opt;
 	uint8_t		*tmpbuf;
 	off_t		tmpbufoff;
-	AVPacket	**ifb;
-	int		ifbo;
 	uint8_t		*sps, *pps;
 	int		spssize, ppssize;
 	int		fd;
@@ -1150,11 +1274,12 @@ int main(int argc, char *argv[])
 		usage(argv[0]);
 
 	ctx.bitrate = 2*1024*1024;
+	TAILQ_INIT(&packetq);
 
-	while ((opt = getopt(argc, argv, "b:dmr:")) != -1) {
+	while ((opt = getopt(argc, argv, "b:dmxr:v")) != -1) {
 		switch (opt) {
 		case 'b':
-			ctx.bitrate = atoi(optarg);
+			ctx.bitrate = parsebitrate(optarg);
 			break;
 		case 'd':
 			ctx.flags |= FLAGS_DEINTERLACE;
@@ -1164,6 +1289,12 @@ int main(int argc, char *argv[])
 			break;
 		case 'r':
 			ctx.resize = optarg;
+			break;
+		case 'v':
+			ctx.verbosity++;
+			break;
+		case 'x':
+			ctx.flags |= FLAGS_NOSUBS;
 			break;
 		case '?':
 			usage(argv[0]);
@@ -1177,7 +1308,7 @@ int main(int argc, char *argv[])
 	if (strncmp(&oname[j-4], ".nal", 4) == 0 ||
 		strncmp(&oname[j-4], ".264", 4) == 0) {
 		ctx.flags |= FLAGS_RAW;
-		fd = open(oname, O_CREAT|O_TRUNC|O_WRONLY, 0777);
+		fd = open(oname, O_CREAT|O_TRUNC|O_WRONLY, 0666);
 		if (fd == -1) {
 			fprintf(stderr,
 				"Failed to open the output: %s\n",
@@ -1385,78 +1516,32 @@ int main(int argc, char *argv[])
 	filtertest = ish264;
 	tmpbufoff = 0;
 	tmpbuf = NULL;
-	ifbo = 0;
-	ifb = calloc(1, sizeof(AVPacket *));
 
 	for (offset = i = j = 0; ctx.decstate != DECFAILED; i++, j++) {
 		int rc;
 		int k;
 		int size, nsize;
-		int index;
+		int outindex;
 		OMX_BUFFERHEADERTYPE *spare;
 		AVRational omxtimebase = { 1, 1000000 };
 		OMX_TICKS tick;
-		uint64_t dts = 0;
 
 		if (offset == 0 && ctx.decstate != DECFLUSH) {
-			rc = av_read_frame(ic, rp);
+			uint64_t omt;
+			rc = getnextvideopacket(rp);
 			if (rc != 0) {
 				if (ic->pb->eof_reached)
 					ctx.decstate = DECFLUSH;
 				break;
 			}
-			index = rp->stream_index;
-			if (index != vidindex) {
-				i--;
-				if (ctx.oc) {
-					int r;
-					if (rp->pts != AV_NOPTS_VALUE)
-						rp->pts = av_rescale_q(rp->pts,
-							ic->streams[index]->time_base,
-							oc->streams[index]->time_base);
-					if (rp->dts != AV_NOPTS_VALUE)
-						rp->dts = av_rescale_q(rp->dts,
-							ic->streams[index]->time_base,
-							oc->streams[index]->time_base);
-					r = av_interleaved_write_frame(ctx.oc,
-						rp);
-					if (r < 0)
-						printf("r: %d\n", r);
-				} else if ((ctx.flags & FLAGS_RAW) == 0) {
-					AVPacket *np;
-					ifb = realloc(ifb,
-						sizeof(AVPacket *)*(ifbo+2));
-					np = malloc(sizeof(AVPacket));
-					ifb[ifbo++] = np;
-					ifb[ifbo  ] = NULL;
-					*np = *rp;
-					np->data = malloc(np->size);
-					memcpy(np->data, rp->data, np->size);
-					np->side_data = NULL;
-					np->side_data_elems = 0;
-					np->pos = -1;
-					av_free_packet(rp);
-				} else {
-					av_free_packet(rp);
-				}
-				continue;
-			} else {
-				uint64_t omt;
+			outindex = rp->stream_index;
 
-//				if (rp->pts != AV_NOPTS_VALUE) {
-					omt = av_rescale_q(rp->pts,
-						ic->streams[index]->time_base,
-						omxtimebase);
-					tick.nLowPart = (uint32_t) (omt &
-								0xffffffff);
-					tick.nHighPart = (uint32_t)
-						((omt & 0xffffffff00000000) 
-							>> 32);
-//				} else {
-//					tick.nLowPart = tick.nHighPart = 0;
-//				}
-// printf("Inbound PTS: %lld (%d/%d)\n", rp->pts, ic->streams[index]->time_base.num, ic->streams[index]->time_base.den);
-			}
+			omt = av_rescale_q(rp->pts,
+				ic->streams[vidindex]->time_base,
+				omxtimebase);
+			tick.nLowPart = (uint32_t) (omt & 0xffffffff);
+			tick.nHighPart = (uint32_t)
+					((omt & 0xffffffff00000000) >> 32);
 
 			size = rp->size;
 			ctx.fps++;
@@ -1476,9 +1561,9 @@ int main(int argc, char *argv[])
 		switch (ctx.decstate) {
 		case DECTUNNELSETUP:
 			start = time(NULL);
-			configure(&ctx, ifb);
+			configure(&ctx);
 			oc = ctx.oc;
-			ctx.decstate = DECRUNNING;
+			ctx.decstate = ENCSPSPPS;
 			break;
 		case DECFLUSH:
 			size = 0;
@@ -1512,6 +1597,7 @@ int main(int argc, char *argv[])
 				AVPacket pkt;
 				int r;
 				OMX_TICKS tick = spare->nTimeStamp;
+				int writepkt = (pps && sps);
 
 				if (ctx.flags & FLAGS_RAW) {
 					write(fd,
@@ -1540,7 +1626,8 @@ int main(int argc, char *argv[])
 				}
 
 				av_init_packet(&pkt);
-				pkt.stream_index = vidindex;
+				outindex = ctx.outindex[vidindex];
+				pkt.stream_index = outindex;
 				if (tmpbufoff) {
 					memcpy(&tmpbuf[tmpbufoff],
 						&spare->pBuffer[spare->nOffset],
@@ -1560,19 +1647,14 @@ int main(int argc, char *argv[])
 				pkt.destruct = freepacket;
 				if (spare->nFlags & OMX_BUFFERFLAG_SYNCFRAME)
 					pkt.flags |= AV_PKT_FLAG_KEY;
-//				if (spare->nTimeStamp.nLowPart == 0 &&
-//					spare->nTimeStamp.nHighPart == 0) {
-//					pkt.pts = AV_NOPTS_VALUE;
-//				} else {
-					pkt.pts = av_rescale_q(((((uint64_t)
-						tick.nHighPart)<<32)
-						| tick.nLowPart), omxtimebase,
-						oc->streams[index]->time_base);
-//				}
-				pkt.dts = AV_NOPTS_VALUE; // dts;
-				dts += ctx.frameduration;
-// printf("PTS: %lld %x\n", pkt.pts, spare->nFlags);
+				pkt.pts = av_rescale_q(((((uint64_t)
+					tick.nHighPart)<<32)
+					| tick.nLowPart), omxtimebase,
+					oc->streams[outindex]->time_base);
+				if (pkt.pts != 0)
+					pkt.pts -= ctx.ptsoff;
 
+				pkt.dts = AV_NOPTS_VALUE; // dts;
 
 				if (pkt.data[0] == 0 && pkt.data[1] == 0 &&
 					pkt.data[2] == 0 && pkt.data[3] == 1) {
@@ -1585,6 +1667,7 @@ int main(int argc, char *argv[])
 							pkt.size);
 						spssize = pkt.size;
 						printf("New SPS, length %d\n", spssize);
+						writepkt = false;
 					} else if (nt == 8) {
 						if (pps)
 							free(pps);
@@ -1593,30 +1676,44 @@ int main(int argc, char *argv[])
 							pkt.size);
 						ppssize = pkt.size;
 						printf("New PPS, length %d\n", ppssize);
+						writepkt = false;
 					}
 					if (nt == 7 || nt == 8) {
 						AVCodecContext *c;
-						c = oc->streams[vidindex]->codec;
+						c = oc->streams[outindex]->codec;
 						if (c->extradata) {
 							av_free(c->extradata);
 							c->extradata = NULL;
 							c->extradata_size = 0;
 						}
-						c->extradata =
-							convertnals(sps,
-								spssize,
-								pps, ppssize,
-								&c->extradata_size);
+						if (pps && sps) {
+							c->extradata_size =
+								ppssize +
+								spssize;
+							c->extradata = malloc(
+								ppssize+spssize);
+							memcpy(c->extradata,
+							       sps, spssize);
+							memcpy(&c->
+							       extradata
+							       [spssize], pps,
+							       ppssize);
+							openoutput(&ctx);
+							ctx.decstate = ENCRUNNING;
+						}
 					}
 				}
 
-				r = av_interleaved_write_frame(ctx.oc, &pkt);
-				if (r != 0) {
-					char err[256];
-					av_strerror(r, err, sizeof(err));
-					printf("Failed to write a video frame: %s (%lld, %llx; %d %d) %x.\n", err, pkt.pts, pkt.pts, tick.nLowPart, tick.nHighPart, spare->nFlags);
-				} else {
-//					printf("Wrote a video frame! %lld (%llx)\n", pkt.pts, pkt.pts);
+				if (writepkt) {
+					r = av_interleaved_write_frame(ctx.oc, &pkt);
+					if (r != 0) {
+						char err[256];
+						av_strerror(r, err, sizeof(err));
+						printf("Failed to write a video frame: %s (%lld, %llx; %d %d) %x.\n", err, pkt.pts, pkt.pts, tick.nLowPart, tick.nHighPart, spare->nFlags);
+					} else {
+//						printf("Wrote a video frame! %lld (%llx)\n", pkt.pts, pkt.pts);
+						av_free_packet(&pkt);
+					}
 				}
 				spare->nFilledLen = 0;
 				spare->nOffset = 0;
