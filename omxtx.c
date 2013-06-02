@@ -782,9 +782,14 @@ static AVPacket *filter(struct context *ctx, AVPacket *rp)
 			p = fp;
 		} else {
 			char err[256];
+#if 0
 			printf("Failed to filter frame: "
 				"%d (%x): %s\n", rc, rc,
 				av_make_error_string(err, sizeof(err), rc));
+#else
+			printf("Failed to filter frame: "
+				"%d (%x)\n", rc, rc);
+#endif
 			p = rp;
 		}
 	} else
