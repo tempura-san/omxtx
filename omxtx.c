@@ -9,7 +9,7 @@
  * particularly pretty output, and is probably buggier than a swamp in
  * summer.  Beware of memory leaks.
  *
- * Usage: ./omxtx [-b bitrate] [-r size] [-x] [-d] input.foo output.m4v
+ * Usage: ./omxtx [-b bitrate] [-r size] [-x] [-d] [-m] input.foo output.mp4
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -277,6 +277,7 @@ static void dumpport(OMX_HANDLETYPE handle, int port)
 }
 
 
+
 static int mapcodec(enum CodecID id)
 {
 	printf("Mapping codec ID %d (%x)\n", id, id);
@@ -286,6 +287,8 @@ static int mapcodec(enum CodecID id)
 			return OMX_VIDEO_CodingMPEG2;
 		case	CODEC_ID_H264:
 			return OMX_VIDEO_CodingAVC;
+		case	8:
+			return OMX_VIDEO_CodingMJPEG;
 		case	13:
 			return OMX_VIDEO_CodingMPEG4;
 		default:
@@ -294,6 +297,7 @@ static int mapcodec(enum CodecID id)
 
 	return -1;
 }
+
 
 
 static void dumpportstate(void)
@@ -1149,16 +1153,19 @@ printf("Post-sleep.\n"); fflush(stdout);
 
 static void usage(const char *name)
 {
-	fprintf(stderr, "Usage: %s [-b bitrate] [-d] [-m] [-r size] <infile> "
+	fprintf(stderr, "Usage: %s [-b bitrate] [-d] [-m] [-r size] [-x] <infile> "
 		"<outfile>\n\n"
 		"Where:\n"
 	"\t-b bitrate\tTarget bitrate in bits/second (default: 2Mb/s)\n"
 	"\t-d\t\tDeinterlace\n"
 	"\t-m\t\tMonitor.  Display the decoder's output\n"
 	"\t-r size\t\tResize output.  'size' is either a percentage, or XXxYY\n"
+	"\t-x\t\tRemove all non-AV streams from the output\n"
 	"\n"
 	"Output container is guessed based on filename.  Use '.nal' for raw"
 	" output.\n"
+	"\n"
+	"Input file must contain one of MPEG 2, H.264, or MJPEG video\n"
 	"\n", name);
 	exit(1);
 }
