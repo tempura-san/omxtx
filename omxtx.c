@@ -15,12 +15,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
@@ -266,7 +266,7 @@ static void dumpport(OMX_HANDLETYPE handle, int port)
 			portdef->format.image.nSliceHeight,
 			portdef->format.image.bFlagErrorConcealment,
 			portdef->format.image.eCompressionFormat,
-			portdef->format.image.eColorFormat); 		
+			portdef->format.image.eColorFormat);
 		break;
 /* Feel free to add others. */
 	default:
@@ -421,7 +421,7 @@ printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.d
 /* Apparently fixes a crash on .mkvs with attachments: */
 			av_dict_copy(&oflow->metadata, iflow->metadata, 0);
 /* Reset the codec tag so as not to cause problems with output format */
-			oflow->codec->codec_tag = 0; 
+			oflow->codec->codec_tag = 0;
 		}
 	}
 	for (i = 0; i < oc->nb_streams; i++) {
@@ -469,7 +469,7 @@ static void writenonvideopacket(AVPacket *pkt)
 	} else {
 		av_free_packet(pkt);
 	}
-	
+
 }
 
 
@@ -557,14 +557,14 @@ OMX_ERRORTYPE genericeventhandler(OMX_HANDLETYPE component,
 				mapcomponent(ctx, component), component,
 				data1, data2);
 	}
-	
+
 	return OMX_ErrorNone;
 }
 
 
 OMX_ERRORTYPE deceventhandler(OMX_HANDLETYPE component,
 				struct context *ctx,
-				OMX_EVENTTYPE event, 
+				OMX_EVENTTYPE event,
 				OMX_U32 data1,
 				OMX_U32 data2,
 				OMX_PTR eventdata)
@@ -580,7 +580,7 @@ OMX_ERRORTYPE deceventhandler(OMX_HANDLETYPE component,
 
 OMX_ERRORTYPE enceventhandler(OMX_HANDLETYPE component,
 				struct context *ctx,
-				OMX_EVENTTYPE event, 
+				OMX_EVENTTYPE event,
 				OMX_U32 data1,
 				OMX_U32 data2,
 				OMX_PTR eventdata)
@@ -1229,7 +1229,7 @@ static int getnextvideopacket(AVPacket *pkt)
 					writenonvideopacket(pkt);
 				} else if ((ctx.flags & FLAGS_RAW) == 0) {
 					/*
-					   Save packet for when we open the output file 
+					   Save packet for when we open the output file
 					 */
 					struct packetentry *entry;
 					entry =
@@ -1238,7 +1238,7 @@ static int getnextvideopacket(AVPacket *pkt)
 					TAILQ_INSERT_TAIL(&packetq, entry,
 							  link);
 					/*
-					   We've copied out the contents of the packet so re-initialise 
+					   We've copied out the contents of the packet so re-initialise
 					 */
 					av_init_packet(pkt);
 				} else {
@@ -1379,7 +1379,7 @@ int main(int argc, char *argv[])
 	}
 	printf("Found a video at index %d\n", vidindex);
 
-	printf("Frame size: %dx%d\n", ic->streams[vidindex]->codec->width, 
+	printf("Frame size: %dx%d\n", ic->streams[vidindex]->codec->width,
 		ic->streams[vidindex]->codec->height);
 	ish264 = (ic->streams[vidindex]->codec->codec_id == CODEC_ID_H264);
 
@@ -1443,7 +1443,7 @@ int main(int argc, char *argv[])
 	printf("Mapping codec %d to %d\n",
 		ic->streams[vidindex]->codec->codec_id,
 		mapcodec(ic->streams[vidindex]->codec->codec_id));
-	viddef->eCompressionFormat = 
+	viddef->eCompressionFormat =
 		mapcodec(ic->streams[vidindex]->codec->codec_id);
 	viddef->bFlagErrorConcealment = 0;
 //	viddef->xFramerate = 25<<16;
