@@ -9,7 +9,7 @@
  * particularly pretty output, and is probably buggier than a swamp in
  * summer.  Beware of memory leaks.
  *
- * Usage: ./omxtx [-b bitrate] [-r size] [-x] [-d] [-m] input.foo output.mp4
+ * Usage: ./omxtx [-b bitrate] [-r size] [-x] [-d] [-m] [-t inputType] input.foo output.mp4
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1161,11 +1161,13 @@ static void usage(const char *name)
 	"\t-m\t\tMonitor.  Display the decoder's output\n"
 	"\t-r size\t\tResize output.  'size' is either a percentage, or XXxYY\n"
 	"\t-x\t\tRemove all non-AV streams from the output\n"
+	"\t-t type\t\tInput format type\n"
 	"\n"
 	"Output container is guessed based on filename.  Use '.nal' for raw"
 	" output.\n"
 	"\n"
 	"Input file must contain one of MPEG 2, H.264, or MJPEG video\n"
+	"Set input file as pipe:0 and define input type (-t) to read from stdin\n"
 	"\n", name);
 	exit(1);
 }
@@ -1255,8 +1257,10 @@ static int getnextvideopacket(AVPacket *pkt)
 
 int main(int argc, char *argv[])
 {
+	AVInputFormat *ifmt = NULL;
 	AVFormatContext	*ic;
 	AVFormatContext	*oc;
+	char		*ifname = NULL;
 	char		*iname;
 	char		*oname;
 	int		err;
@@ -1288,7 +1292,7 @@ int main(int argc, char *argv[])
 	ctx.bitrate = 2*1024*1024;
 	TAILQ_INIT(&packetq);
 
-	while ((opt = getopt(argc, argv, "b:dmxr:v")) != -1) {
+	while ((opt = getopt(argc, argv, "b:dmxr:vt:")) != -1) {
 		switch (opt) {
 		case 'b':
 			ctx.bitrate = parsebitrate(optarg);
@@ -1307,6 +1311,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'x':
 			ctx.flags |= FLAGS_NOSUBS;
+			break;
+		case 't':
+			ifname = optarg;
 			break;
 		case '?':
 			usage(argv[0]);
@@ -1356,7 +1363,15 @@ int main(int argc, char *argv[])
 
 	/* Input init: */
 
-	if ((err = avformat_open_input(&ic, iname, NULL, NULL) != 0)) {
+	if (ifname) {
+		ifmt = av_find_input_format(ifname);
+		if (!ifmt) {
+			fprintf(stderr, "Could not find '%s' demuxer\n", ifname);
+			exit(1);
+		}
+	}
+
+	if ((err = avformat_open_input(&ic, iname, ifmt, NULL) != 0)) {
 		fprintf(stderr, "Failed to open '%s': %s\n", iname,
 			strerror(err));
 		exit(1);
