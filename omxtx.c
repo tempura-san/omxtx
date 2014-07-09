@@ -1341,6 +1341,7 @@ int main(int argc, char *argv[])
 	MAKEME(pfmt, OMX_VIDEO_PARAM_PORTFORMATTYPE);
 
 	av_register_all();
+	avformat_network_init();
 
 	ic = NULL;
 	ish264 = 0;
