@@ -785,8 +785,8 @@ static AVPacket *filter(struct context *ctx, AVPacket *rp)
 			fp->destruct = av_destruct_packet;
 			p = fp;
 		} else {
-			char err[256];
 #if 0
+			char err[256];
 			printf("Failed to filter frame: "
 				"%d (%x): %s\n", rc, rc,
 				av_make_error_string(err, sizeof(err), rc));
