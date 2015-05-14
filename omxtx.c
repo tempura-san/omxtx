@@ -784,6 +784,9 @@ static AVPacket *filter(struct context *ctx, AVPacket *rp)
 			av_free_packet(rp);
 			fp->destruct = av_destruct_packet;
 			p = fp;
+		} else if(rc == 0) {
+			// no output buffer allocated, input == output
+			p = fp;
 		} else {
 #if 0
 			char err[256];
