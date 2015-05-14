@@ -1292,7 +1292,7 @@ int main(int argc, char *argv[])
 	ctx.bitrate = 2*1024*1024;
 	TAILQ_INIT(&packetq);
 
-	while ((opt = getopt(argc, argv, "b:dmxr:vt:")) != -1) {
+	while ((opt = getopt(argc, argv, "b:dmxr:vt:h")) != -1) {
 		switch (opt) {
 		case 'b':
 			ctx.bitrate = parsebitrate(optarg);
@@ -1315,13 +1315,24 @@ int main(int argc, char *argv[])
 		case 't':
 			ifname = optarg;
 			break;
+		case 'h':
 		case '?':
 			usage(argv[0]);
 		}
 	}
 
+	if(optind == argc) {
+		fprintf(stderr, "No input file specified.\n");
+		exit(1);
+	}
 	iname = argv[optind++];
+
+	if(optind == argc) {
+		fprintf(stderr, "No output file specified.\n");
+		exit(1);
+	}
 	oname = argv[optind++];
+
 	ctx.oname = oname;
 	j = strlen(oname);
 	if (strncmp(&oname[j-4], ".nal", 4) == 0 ||
