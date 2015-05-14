@@ -280,22 +280,25 @@ static void dumpport(OMX_HANDLETYPE handle, int port)
 
 static int mapcodec(enum CodecID id)
 {
-	printf("Mapping codec ID %d (%x)\n", id, id);
+	printf("Mapping codec ID %d (0x%02x) as ", id, id);
 	switch (id) {
-		case	CODEC_ID_MPEG2VIDEO:
-		case	CODEC_ID_MPEG2VIDEO_XVMC:
+		case CODEC_ID_MPEG2VIDEO:
+		case CODEC_ID_MPEG2VIDEO_XVMC:
+			printf("MPEG2 (%d)\n", OMX_VIDEO_CodingMPEG2);
 			return OMX_VIDEO_CodingMPEG2;
-		case	CODEC_ID_H264:
+		case CODEC_ID_H264:
+			printf("AVC (%d)\n", OMX_VIDEO_CodingAVC);
 			return OMX_VIDEO_CodingAVC;
-		case	8:
+		case CODEC_ID_MJPEG:
+			printf("MJPEG (%d)\n", OMX_VIDEO_CodingMJPEG);
 			return OMX_VIDEO_CodingMJPEG;
-		case	13:
+		case CODEC_ID_MPEG4:
+			printf("MPEG4 (%d)\n", OMX_VIDEO_CodingMPEG4);
 			return OMX_VIDEO_CodingMPEG4;
 		default:
+			printf("unknown (-1)\n");
 			return -1;
 	}
-
-	return -1;
 }
 
 
