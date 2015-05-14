@@ -86,12 +86,12 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 #define OERR(cmd)	do {						\
 				OMX_ERRORTYPE oerr = cmd;		\
 				if (oerr != OMX_ErrorNone) {		\
-					fprintf(stderr, #cmd		\
+					logprintf(V_ALWAYS, #cmd		\
 						" failed on line %d: %x\n", \
 						__LINE__, oerr);	\
 					exit(1);			\
 				} else {				\
-					fprintf(stderr, #cmd		\
+					logprintf(V_DEBUG, #cmd		\
 						" completed at %d.\n",	\
 						__LINE__);		\
 				}					\
@@ -99,7 +99,7 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 
 #define OERRq(cmd)	do {	oerr = cmd;				\
 				if (oerr != OMX_ErrorNone) {		\
-					fprintf(stderr, #cmd		\
+					logprintf(V_ALWAYS, #cmd		\
 						" failed: %x\n", oerr);	\
 					exit(1);			\
 				}					\
@@ -108,13 +108,18 @@ static OMX_VERSIONTYPE SpecificationVersion = {
 
 #define V_ALWAYS	0
 #define V_INFO		1
-#define V_LOTS		2
+#define V_DEBUG		2
 
 /* Not vprintf(); there's already one of those in libc... */
+static int verbosity = V_ALWAYS;
 #define logprintf(v, ...) \
     do { \
-        if ((v) <= ctx.verbosity) { \
-            printf( __VA_ARGS__); \
+        if ((v) <= verbosity) { \
+        	if(v > V_ALWAYS) { \
+            	fprintf(stderr, __VA_ARGS__); \
+        	} else { \
+        		fprintf(stdout, __VA_ARGS__); \
+        	} \
         } \
     } while (0)
 
@@ -189,7 +194,6 @@ static struct context {
 	char		*resize;
 	char		*oname;
 	double		frameduration;
-	int		verbosity;
 	int64_t		ptsoff;
 } ctx;
 #define FLAGS_VERBOSE		(1<<0)
@@ -207,6 +211,11 @@ static OMX_BUFFERHEADERTYPE *allocbufs(OMX_HANDLETYPE h, int port, int enable);
 /* Print some useful information about the state of the port: */
 static void dumpport(OMX_HANDLETYPE handle, int port)
 {
+	// nothing to print below V_DEBUG
+	if(verbosity < V_DEBUG) {
+		return;
+	}
+
 	OMX_VIDEO_PORTDEFINITIONTYPE	*viddef;
 	OMX_PARAM_PORTDEFINITIONTYPE	*portdef;
 
@@ -214,10 +223,10 @@ static void dumpport(OMX_HANDLETYPE handle, int port)
 	portdef->nPortIndex = port;
 	OERR(OMX_GetParameter(handle, OMX_IndexParamPortDefinition, portdef));
 
-	printf("Port %d is %s, %s\n", portdef->nPortIndex,
+	logprintf(V_DEBUG, "Port %d is %s, %s\n", portdef->nPortIndex,
 		(portdef->eDir == 0 ? "input" : "output"),
 		(portdef->bEnabled == 0 ? "disabled" : "enabled"));
-	printf("Wants %d bufs, needs %d, size %d, enabled: %d, pop: %d, "
+	logprintf(V_DEBUG, "Wants %d bufs, needs %d, size %d, enabled: %d, pop: %d, "
 		"aligned %d\n", portdef->nBufferCountActual,
 		portdef->nBufferCountMin, portdef->nBufferSize,
 		portdef->bEnabled, portdef->bPopulated,
@@ -226,7 +235,7 @@ static void dumpport(OMX_HANDLETYPE handle, int port)
 
 	switch (portdef->eDomain) {
 	case OMX_PortDomainVideo:
-		printf("Video type is currently:\n"
+		logprintf(V_DEBUG, "Video type is currently:\n"
 			"\tMIME:\t\t%s\n"
 			"\tNative:\t\t%p\n"
 			"\tWidth:\t\t%d\n"
@@ -248,7 +257,7 @@ static void dumpport(OMX_HANDLETYPE handle, int port)
 			viddef->eCompressionFormat, viddef->eColorFormat);
 		break;
 	case OMX_PortDomainImage:
-		printf("Image type is currently:\n"
+		logprintf(V_DEBUG, "Image type is currently:\n"
 			"\tMIME:\t\t%s\n"
 			"\tNative:\t\t%p\n"
 			"\tWidth:\t\t%d\n"
@@ -280,23 +289,23 @@ static void dumpport(OMX_HANDLETYPE handle, int port)
 
 static int mapcodec(enum CodecID id)
 {
-	printf("Mapping codec ID %d (0x%02x) as ", id, id);
+	logprintf(V_DEBUG, "Mapping codec ID %d (0x%02x) as ", id, id);
 	switch (id) {
 		case CODEC_ID_MPEG2VIDEO:
 		case CODEC_ID_MPEG2VIDEO_XVMC:
-			printf("MPEG2 (%d)\n", OMX_VIDEO_CodingMPEG2);
+			logprintf(V_DEBUG, "MPEG2 (%d)\n", OMX_VIDEO_CodingMPEG2);
 			return OMX_VIDEO_CodingMPEG2;
 		case CODEC_ID_H264:
-			printf("AVC (%d)\n", OMX_VIDEO_CodingAVC);
+			logprintf(V_DEBUG, "AVC (%d)\n", OMX_VIDEO_CodingAVC);
 			return OMX_VIDEO_CodingAVC;
 		case CODEC_ID_MJPEG:
-			printf("MJPEG (%d)\n", OMX_VIDEO_CodingMJPEG);
+			logprintf(V_DEBUG, "MJPEG (%d)\n", OMX_VIDEO_CodingMJPEG);
 			return OMX_VIDEO_CodingMJPEG;
 		case CODEC_ID_MPEG4:
-			printf("MPEG4 (%d)\n", OMX_VIDEO_CodingMPEG4);
+			logprintf(V_DEBUG, "MPEG4 (%d)\n", OMX_VIDEO_CodingMPEG4);
 			return OMX_VIDEO_CodingMPEG4;
 		default:
-			printf("unknown (-1)\n");
+			logprintf(V_DEBUG, "unknown (-1)\n");
 			return -1;
 	}
 }
@@ -307,16 +316,16 @@ static void dumpportstate(void)
 {
 	enum OMX_STATETYPE		state;
 
-	printf("\n\nIn exit handler, after %d frames:\n", ctx.framecount);
+	logprintf(V_DEBUG, "\n\nIn exit handler, after %d frames:\n", ctx.framecount);
 	dumpport(ctx.dec, PORT_DEC);
 	dumpport(ctx.dec, PORT_DEC+1);
 	dumpport(ctx.enc, PORT_ENC);
 	dumpport(ctx.enc, PORT_ENC+1);
 
 	OMX_GetState(ctx.dec, &state);
-	printf("Decoder state: %d\n", state);
+	logprintf(V_DEBUG, "Decoder state: %d\n", state);
 	OMX_GetState(ctx.enc, &state);
-	printf("Encoder state: %d\n", state);
+	logprintf(V_DEBUG, "Encoder state: %d\n", state);
 }
 
 
@@ -350,19 +359,18 @@ static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
 
 	fmt = av_guess_format(NULL, oname, NULL);
 	if (!fmt) {
-		fprintf(stderr, "Can't guess format for %s; defaulting to "
-			"MPEG\n",
+		logprintf(V_ALWAYS, "Can't guess format for %s; defaulting to MPEG\n",
 			oname);
 		fmt = av_guess_format(NULL, "MPEG", NULL);
 	}
 	if (!fmt) {
-		fprintf(stderr, "Failed even that.  Bye bye.\n");
+		logprintf(V_ALWAYS, "Failed even that.  Bye bye.\n");
 		exit(1);
 	}
 
 	oc = avformat_alloc_context();
 	if (!oc) {
-		fprintf(stderr, "Failed to alloc outputcontext\n");
+		logprintf(V_ALWAYS, "Failed to allocate output context\n");
 		exit(1);
 	}
 	oc->oformat = fmt;
@@ -380,9 +388,9 @@ static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
 		if (i == idx) {	/* My new H.264 stream. */
 			c = avcodec_find_encoder(CODEC_ID_H264);
 			ctx.outindex[i] = streamindex++;
-printf("Found a codec at %p\n", c);
+			logprintf(V_DEBUG, "Found a codec at %p\n", c);
 			oflow = avformat_new_stream(oc, c);
-printf("Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d, ticks: %d; %d %lld/%lld\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate), oflow->codec->ticks_per_frame, iflow->codec->ticks_per_frame, oc->start_time_realtime, ic->start_time_realtime);
+			logprintf(V_DEBUG, "Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d, ticks: %d; %d %lld/%lld\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate), oflow->codec->ticks_per_frame, iflow->codec->ticks_per_frame, oc->start_time_realtime, ic->start_time_realtime);
 			cc = oflow->codec;
 			cc->width = viddef->nFrameWidth;
 			cc->height = viddef->nFrameHeight;
@@ -408,8 +416,8 @@ printf("Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d,
 				    iflow->codec->sample_aspect_ratio.den;
 			}
 
-printf("Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate));
-printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.den, oflow->r_frame_rate.num, oflow->r_frame_rate.den);
+			logprintf(V_DEBUG, "Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate));
+			logprintf(V_DEBUG, "Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.den, oflow->r_frame_rate.num, oflow->r_frame_rate.den);
 		} else { 	/* Something pre-existing. */
 			if ((ctx.flags & FLAGS_NOSUBS) &&
 				iflow->codec->codec_type !=
@@ -421,9 +429,9 @@ printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.d
 			c = avcodec_find_encoder(iflow->codec->codec_id);
 			oflow = avformat_new_stream(oc, c);
 			avcodec_copy_context(oflow->codec, iflow->codec);
-/* Apparently fixes a crash on .mkvs with attachments: */
+			/* Apparently fixes a crash on .mkvs with attachments: */
 			av_dict_copy(&oflow->metadata, iflow->metadata, 0);
-/* Reset the codec tag so as not to cause problems with output format */
+			/* Reset the codec tag so as not to cause problems with output format */
 			oflow->codec->codec_tag = 0;
 		}
 	}
@@ -435,9 +443,9 @@ printf("Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.d
 			oc->streams[i]->codec->sample_rate = 48000; /* ish */
 	}
 
-printf("\n\n\nInput:\n");
+	logprintf(V_ALWAYS, "\n\n\nInput:\n");
 	av_dump_format(ic, 0, ic->filename, 0);
-printf("\n\n\nOutput:\n");
+	logprintf(V_ALWAYS, "\n\n\nOutput:\n");
 	av_dump_format(oc, 0, oname, 1);
 
 	return oc;
@@ -467,7 +475,7 @@ static void writenonvideopacket(AVPacket *pkt)
 					 ctx.oc->streams[outindex]->time_base);
 			pkt->dts -= ctx.ptsoff;
 		}
-		logprintf(V_LOTS, "Other PTS %lld\n", pkt->pts);
+		logprintf(V_DEBUG, "Other PTS %lld\n", pkt->pts);
 		av_interleaved_write_frame(ctx.oc, pkt);
 	} else {
 		av_free_packet(pkt);
@@ -496,11 +504,11 @@ static void openoutput(struct context *ctx)
 	r = avformat_write_header(oc, NULL);
 	if (r < 0) {
 		av_strerror(r, err, sizeof(err));
-		fprintf(stderr, "Failed to write header: %s\n", err);
+		logprintf(V_ALWAYS, "Failed to write header: %s\n", err);
 		exit(1);
 	}
 
-	printf("Writing initial frame buffer contents out...");
+	logprintf(V_ALWAYS, "Writing initial frame buffer contents out...");
 
 	outindex = ctx->outindex[ctx->vidindex];
 	ctx->ptsoff =
@@ -520,7 +528,7 @@ static void openoutput(struct context *ctx)
 		free(packet);
 	}
 
-	printf(" ...done.  Wrote %d frames.\n\n", i);
+	logprintf(V_ALWAYS, " ...done. Wrote %d frames.\n\n", i);
 
 	return;
 }
@@ -537,28 +545,25 @@ OMX_ERRORTYPE genericeventhandler(OMX_HANDLETYPE component,
 	switch (event) {
 	case OMX_EventError:
 	if (ctx->flags & FLAGS_VERBOSE)
-		printf("%s %p has errored: %x\n", mapcomponent(ctx, component),
+		logprintf(V_ALWAYS, "%s %p has errored: %x\n", mapcomponent(ctx, component),
 			component, data1);
 		return data1;
 		break;
 	case OMX_EventCmdComplete:
 	if (ctx->flags & FLAGS_VERBOSE)
-		printf("%s %p has completed the last command.\n",
+		logprintf(V_INFO, "%s %p has completed the last command.\n",
 			mapcomponent(ctx, component), component);
 		break;
-	case OMX_EventPortSettingsChanged: {
-//	if (ctx->flags & FLAGS_VERBOSE)
-		printf("%s %p port %d settings changed.\n",
+	case OMX_EventPortSettingsChanged:
+		logprintf(V_INFO, "%s %p port %d settings changed.\n",
 			mapcomponent(ctx, component), component, data1);
 		dumpport(component, data1);
-	}
 		break;
 	default:
-		if (ctx->flags & FLAGS_VERBOSE)
-			printf("Got an event of type %x on %s %p "
-				"(d1: %x, d2 %x)\n", event,
-				mapcomponent(ctx, component), component,
-				data1, data2);
+		logprintf(V_INFO, "Got an event of type %x on %s %p "
+			"(d1: %x, d2 %x)\n", event,
+			mapcomponent(ctx, component), component,
+			data1, data2);
 	}
 
 	return OMX_ErrorNone;
@@ -612,7 +617,7 @@ OMX_ERRORTYPE emptied(OMX_HANDLETYPE component,
 				OMX_BUFFERHEADERTYPE *buf)
 {
 	if (ctx->flags & FLAGS_VERBOSE)
-		printf("Got a buffer emptied event on %s %p, buf %p\n",
+		logprintf(V_INFO, "Got a buffer emptied event on %s %p, buf %p\n",
 			mapcomponent(ctx, component), component, buf);
 	buf->nFilledLen = 0;
 	ctx->flags |= FLAGS_DECEMPTIEDBUF;
@@ -628,7 +633,7 @@ OMX_ERRORTYPE filled(OMX_HANDLETYPE component,
 	OMX_BUFFERHEADERTYPE *spare;
 
 	if (ctx->flags & FLAGS_VERBOSE)
-		printf("Got buffer %p filled (len %d)\n", buf,
+		logprintf(V_INFO, "Got buffer %p filled (len %d)\n", buf,
 			buf->nFilledLen);
 
 /*
@@ -693,12 +698,12 @@ static void *fps(void *p)
 	while (1) {
 		lastframe = ctx.framecount;
 		sleep(1);
-		printf("Frame %6d (%5ds).  Frames last second: %d     \r",
+		logprintf(V_ALWAYS, "Frame %6d (%5ds).  Frames last second: %d     \r",
 			ctx.framecount, ctx.framecount/25,
 				ctx.framecount-lastframe);
 		fflush(stdout);
 		if (0 && ctx.fps == 0) {
-			printf("In fps thread, after %d frames:\n",
+			logprintf(V_INFO, "In fps thread, after %d frames:\n",
 				ctx.framecount);
 			dumpport(ctx.dec, PORT_DEC);
 			dumpport(ctx.dec, PORT_DEC+1);
@@ -706,9 +711,9 @@ static void *fps(void *p)
 			dumpport(ctx.enc, PORT_ENC+1);
 
 			OMX_GetState(ctx.dec, &state);
-			printf("Decoder state: %d\n", state);
+			logprintf(V_INFO, "Decoder state: %d\n", state);
 			OMX_GetState(ctx.enc, &state);
-			printf("Encoder state: %d\n", state);
+			logprintf(V_INFO, "Encoder state: %d\n", state);
 		}
 	}
 	return NULL;
@@ -734,7 +739,7 @@ static OMX_BUFFERHEADERTYPE *allocbufs(OMX_HANDLETYPE h, int port, int enable)
 
 		buf = vcos_malloc_aligned(portdef->nBufferSize,
 			portdef->nBufferAlignment, "buffer");
-		printf("Allocated a buffer of %d bytes\n",
+		logprintf(V_DEBUG, "Allocated a buffer of %d bytes\n",
 			portdef->nBufferSize);
 		OERR(OMX_UseBuffer(h, end, port, NULL, portdef->nBufferSize,
 			buf));
@@ -757,12 +762,13 @@ static AVBitStreamFilterContext *dofiltertest(AVPacket *rp)
 		rp->data[2] == 0x00 && rp->data[3] == 0x01)) {
 		bsfc = av_bitstream_filter_init("h264_mp4toannexb");
 		if (!bsfc) {
-			printf("Failed to open filter.  This is bad.\n");
+			logprintf(V_ALWAYS, "Failed to open filter.  This is bad.\n");
 		} else {
-			printf("Have a filter at %p\n", bsfc);
+			logprintf(V_DEBUG, "Have a filter at %p\n", bsfc);
 		}
-	} else
-		printf("No need for a filter.\n");
+	} else {
+		logprintf(V_INFO, "No need for a filter.\n");
+	}
 
 	return bsfc;
 }
@@ -793,11 +799,11 @@ static AVPacket *filter(struct context *ctx, AVPacket *rp)
 		} else {
 #if 0
 			char err[256];
-			printf("Failed to filter frame: "
+			logprintf(V_ALWAYS, "Failed to filter frame: "
 				"%d (%x): %s\n", rc, rc,
 				av_make_error_string(err, sizeof(err), rc));
 #else
-			printf("Failed to filter frame: "
+			logprintf(V_ALWAYS, "Failed to filter frame: "
 				"%d (%x)\n", rc, rc);
 #endif
 			p = rp;
@@ -850,7 +856,7 @@ static void configure(struct context *ctx)
 	prev = dec;
 	pp = PORT_DEC+1;
 
-	printf("Decoder has changed settings.  Setting up encoder.\n");
+	logprintf(V_INFO, "Decoder has changed settings. Setting up encoder.\n");
 
 	if (ctx->flags & FLAGS_MONITOR) {
 		OERR(OMX_GetHandle(&spl, SPLNAME, &ctx, &genevents));
@@ -953,7 +959,7 @@ static void configure(struct context *ctx)
 		}
 		imgdef->nStride = 0;
 		imgdef->nSliceHeight = 0;
-		printf("Frame size: %dx%d, scale factor %d\n",
+		logprintf(V_INFO, "Frame size: %dx%d, scale factor %d\n",
 			imgdef->nFrameWidth, imgdef->nFrameHeight, x);
 		imgportdef->nPortIndex = PORT_RSZ+1;
 		OERR(OMX_SetParameter(rsz, OMX_IndexParamPortDefinition,
@@ -1059,7 +1065,7 @@ dumpport(spl, PORT_SPL);
 	OERR(OMX_SetParameter(enc, OMX_IndexConfigVideoFramerate, framerate));
 
 #if 0 /* Doesn't seem to apply to video? */
-printf("Interlacing: %d\n", ic->streams[vidindex]->codec->field_order);
+	logprintf(V_INFO, "Interlacing: %d\n", ic->streams[vidindex]->codec->field_order);
 	if (0 || ic->streams[vidindex]->codec->field_order == AV_FIELD_TT) {
 		interlace->nPortIndex = PORT_ENC+1;
 		interlace->eMode = OMX_InterlaceFieldsInterleavedUpperFirst;
@@ -1073,7 +1079,7 @@ printf("Interlacing: %d\n", ic->streams[vidindex]->codec->field_order);
 	level->nPortIndex = PORT_ENC+1;
 	OERR(OMX_GetParameter(enc, OMX_IndexParamVideoProfileLevelCurrent,
 		level));
-	printf("Current level:\t\t%d\nCurrent profile:\t%d\n",
+	logprintf(V_INFO, "Current level:\t\t%d\nCurrent profile:\t%d\n",
 		level->eLevel, level->eProfile);
 	OERR(OMX_SetParameter(enc, OMX_IndexParamVideoProfileLevelCurrent,
 		level));
@@ -1098,10 +1104,10 @@ printf("Interlacing: %d\n", ic->streams[vidindex]->codec->field_order);
 			NULL));
 		OERR(OMX_SendCommand(spl, OMX_CommandPortEnable, PORT_SPL+2,
 			NULL));
-// sleep(1); printf("\n\n\n\n\n"); for (i = 0; i < 5; i++) dumpport(spl, PORT_SPL+i); sleep(1);
-printf("Pre-sleep.\n"); fflush(stdout);
+		// sleep(1); printf("\n\n\n\n\n"); for (i = 0; i < 5; i++) dumpport(spl, PORT_SPL+i); sleep(1);
+		logprintf(V_DEBUG, "Pre-sleep.\n"); fflush(stdout);
 		sleep(1);	/* Should probably wait for an event instead */
-printf("Post-sleep.\n"); fflush(stdout);
+		logprintf(V_DEBUG, "Post-sleep.\n"); fflush(stdout);
 		OERR(OMX_SendCommand(vid, OMX_CommandStateSet,
 			OMX_StateExecuting, NULL));
 		OERR(OMX_SendCommand(spl, OMX_CommandStateSet,
@@ -1144,7 +1150,7 @@ printf("Post-sleep.\n"); fflush(stdout);
 		ctx->oc = makeoutputcontext(ctx->ic, ctx->oname, ctx->vidindex,
 			portdef);
 		if (!ctx->oc) {
-			fprintf(stderr, "Whoops.\n");
+			logprintf(V_ALWAYS, "Whoops.\n");
 			exit(1);
 		}
 	}
@@ -1199,13 +1205,13 @@ static int parsebitrate(const char *s)
 		case 'm':
 			return (int)(rate * 1024.0 * 1024.0);
 		default:
-			fprintf(stderr, "Unrecognised bitrate specifier!\n");
+			logprintf(V_ALWAYS, "Unrecognised bitrate specifier!\n");
 			exit(1);
 			break;
 		}
 		break;
 	default:
-		fprintf(stderr, "Failed to parse bitrate!\n");
+		logprintf(V_ALWAYS, "Failed to parse bitrate!\n");
 		exit(1);
 		break;
 	}
@@ -1279,7 +1285,6 @@ int main(int argc, char *argv[])
 	OMX_PARAM_PORTDEFINITIONTYPE	*portdef;
 	OMX_BUFFERHEADERTYPE		*decbufs;
 	OMX_VIDEO_PORTDEFINITIONTYPE	*viddef;
-	OMX_VIDEO_PARAM_PROFILELEVELTYPE *level;
 	time_t		start, end;
 	int		offset;
 	AVPacket	*p, *rp;
@@ -1313,7 +1318,7 @@ int main(int argc, char *argv[])
 			ctx.resize = optarg;
 			break;
 		case 'v':
-			ctx.verbosity++;
+			verbosity++;
 			break;
 		case 'x':
 			ctx.flags |= FLAGS_NOSUBS;
@@ -1328,13 +1333,13 @@ int main(int argc, char *argv[])
 	}
 
 	if(optind == argc) {
-		fprintf(stderr, "No input file specified.\n");
+		logprintf(V_ALWAYS, "No input file specified.\n");
 		exit(1);
 	}
 	iname = argv[optind++];
 
 	if(optind == argc) {
-		fprintf(stderr, "No output file specified.\n");
+		logprintf(V_ALWAYS, "No output file specified.\n");
 		exit(1);
 	}
 	oname = argv[optind++];
@@ -1346,7 +1351,7 @@ int main(int argc, char *argv[])
 		ctx.flags |= FLAGS_RAW;
 		fd = open(oname, O_CREAT|O_TRUNC|O_WRONLY, 0666);
 		if (fd == -1) {
-			fprintf(stderr,
+			logprintf(V_ALWAYS,
 				"Failed to open the output: %s\n",
 				strerror(errno));
 			exit(1);
@@ -1372,7 +1377,7 @@ int main(int argc, char *argv[])
 		AVOutputFormat *fmt;
 		fmt = av_oformat_next(fmt);
 		while (fmt) {
-			printf("Found '%s'\t\t'%s'\n", fmt->name, fmt->long_name);
+			logprintf(V_INFO, "Found '%s'\t\t'%s'\n", fmt->name, fmt->long_name);
 			fmt = av_oformat_next(fmt);
 		}
 		exit(0);
@@ -1384,20 +1389,20 @@ int main(int argc, char *argv[])
 	if (ifname) {
 		ifmt = av_find_input_format(ifname);
 		if (!ifmt) {
-			fprintf(stderr, "Could not find '%s' demuxer\n", ifname);
+			logprintf(V_ALWAYS, "Could not find '%s' demuxer\n", ifname);
 			exit(1);
 		}
 	}
 
 	if ((err = avformat_open_input(&ic, iname, ifmt, NULL) != 0)) {
-		fprintf(stderr, "Failed to open '%s': %s\n", iname,
+		logprintf(V_ALWAYS, "Failed to open '%s': %s\n", iname,
 			strerror(err));
 		exit(1);
 	}
 	ctx.ic = ic;
 
 	if (avformat_find_stream_info(ic, NULL) < 0) {
-		fprintf(stderr, "Failed to find streams in '%s'\n", iname);
+		logprintf(V_ALWAYS, "Failed to find streams in '%s'\n", iname);
 		exit(1);
 	}
 
@@ -1406,13 +1411,13 @@ int main(int argc, char *argv[])
 	vidindex = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1,
 		NULL, 0);
 	if (vidindex < 0) {
-		fprintf(stderr, "Failed to find a video stream in '%s'\n",
+		logprintf(V_ALWAYS, "Failed to find a video stream in '%s'\n",
 			iname);
 		exit(1);
 	}
-	printf("Found a video at index %d\n", vidindex);
+	logprintf(V_INFO, "Found a video at index %d\n", vidindex);
 
-	printf("Frame size: %dx%d\n", ic->streams[vidindex]->codec->width,
+	logprintf(V_INFO, "Frame size: %dx%d\n", ic->streams[vidindex]->codec->width,
 		ic->streams[vidindex]->codec->height);
 	ish264 = (ic->streams[vidindex]->codec->codec_id == CODEC_ID_H264);
 
@@ -1420,11 +1425,11 @@ int main(int argc, char *argv[])
 #if 0
 	ctx.fd = fd = open(oname, O_CREAT | O_LARGEFILE | O_WRONLY | O_TRUNC,
 			0666);
-	printf("File descriptor %d\n", fd);
+	logprintf(V_DEBUG, "File descriptor %d\n", fd);
 #endif
 
 	for (i = 0; i < ic->nb_streams; i++) {
-		printf("Found stream %d, context %p\n",
+		logprintf(V_DEBUG, "Found stream %d, context %p\n",
 			ic->streams[i]->index, ic->streams[i]->codec);
 	}
 
@@ -1439,21 +1444,21 @@ int main(int argc, char *argv[])
 	ctx.rsz = rsz;
 	ctx.dei = dei;
 
-	printf("Obtained handles.  %p decode, %p encode\n",
+	logprintf(V_DEBUG, "Obtained handles.  %p decode, %p encode\n",
 		dec, enc);
 
 	OERR(OMX_GetParameter(dec, OMX_IndexParamVideoInit, porttype));
-	printf("Found %d ports, starting at %d (%x) on decoder\n",
+	logprintf(V_DEBUG, "Found %d ports, starting at %d (%x) on decoder\n",
 		porttype->nPorts, porttype->nStartPortNumber,
 		porttype->nStartPortNumber);
 
 	OERR(OMX_GetParameter(enc, OMX_IndexParamVideoInit, porttype));
-	printf("Found %d ports, starting at %d (%x) on encoder\n",
+	logprintf(V_DEBUG, "Found %d ports, starting at %d (%x) on encoder\n",
 		porttype->nPorts, porttype->nStartPortNumber,
 		porttype->nStartPortNumber);
 
 	OERR(OMX_GetParameter(rsz, OMX_IndexParamImageInit, porttype));
-	printf("Found %d ports, starting at %d(%x) on resizer\n",
+	logprintf(V_DEBUG, "Found %d ports, starting at %d(%x) on resizer\n",
 		porttype->nPorts, porttype->nStartPortNumber,
 		porttype->nStartPortNumber);
 
@@ -1473,7 +1478,7 @@ int main(int argc, char *argv[])
 	viddef = &portdef->format.video;
 	viddef->nFrameWidth = ic->streams[vidindex]->codec->width;
 	viddef->nFrameHeight = ic->streams[vidindex]->codec->height;
-	printf("Mapping codec %d to %d\n",
+	logprintf(V_DEBUG, "Mapping codec %d to %d\n",
 		ic->streams[vidindex]->codec->codec_id,
 		mapcodec(ic->streams[vidindex]->codec->codec_id));
 	viddef->eCompressionFormat =
@@ -1497,20 +1502,21 @@ int main(int argc, char *argv[])
 	}
 #endif
 
+#if 0
+	OMX_VIDEO_PARAM_PROFILELEVELTYPE *level;
 	MAKEME(level, OMX_VIDEO_PARAM_PROFILELEVELTYPE);
 	level->nPortIndex = PORT_ENC+1;
-/* Dump what the encoder is capable of: */
+	/* Dump what the encoder is capable of: */
 	for (oerr = OMX_ErrorNone, i = 0; oerr == OMX_ErrorNone; i++) {
 		pfmt->nIndex = i;
-		oerr = OMX_GetParameter(enc, OMX_IndexParamVideoPortFormat,
-			pfmt);
+		oerr = OMX_GetParameter(enc, OMX_IndexParamVideoPortFormat, pfmt);
 		if (oerr == OMX_ErrorNoMore)
 			break;
-		printf("Codecs supported:\n"
+		logprintf(V_INFO, "Encoder supported codec:\n"
 			"\tIndex:\t\t%d\n"
-			"\tCodec:\t\t%d (%x)\n"
+			"\tCodec:\t\t%d (0x%02x)\n"
 			"\tColour:\t\t%d\n"
-			"\tFramerate:\t%x (%f)\n",
+			"\tFramerate:\t0x%02x (%f)\n",
 			pfmt->nIndex,
 			pfmt->eCompressionFormat, pfmt->eCompressionFormat,
 			pfmt->eColorFormat,
@@ -1521,20 +1527,20 @@ int main(int argc, char *argv[])
 	for (oerr = OMX_ErrorNone, i = 0; oerr == OMX_ErrorNone; i++) {
 		level->nProfileIndex = i;
 		oerr = OMX_GetParameter(enc,
-			OMX_IndexParamVideoProfileLevelQuerySupported,
-			level);
+				OMX_IndexParamVideoProfileLevelQuerySupported, level);
 		if (oerr == OMX_ErrorNoMore)
 			break;
-		printf("Levels supported:\n"
+		logprintf(V_INFO, "Encoder supported level:\n"
 			"\tIndex:\t\t%d\n"
-			"\tProfile:\t%d\n"
-			"\tLevel:\t\t%d\n",
+			"\tProfile:\t0x%04x\n"
+			"\tLevel:\t\t0x%04x\n",
 			level->nProfileIndex,
 			level->eProfile,
 			level->eLevel);
 	}
+#endif
 
-/* Dump current port states: */
+	/* Dump current port states: */
 	dumpport(dec, PORT_DEC);
 	dumpport(dec, PORT_DEC+1);
 	if (ctx.resize) {
@@ -1551,7 +1557,7 @@ int main(int argc, char *argv[])
 
 	decbufs = allocbufs(dec, PORT_DEC, 1);
 
-/* Start the initial loop.  Process until we have a state change on port 131 */
+	/* Start the initial loop.  Process until we have a state change on port 131 */
 	ctx.decstate = DECINIT;
 	ctx.encstate = ENCPREINIT;
 	OERR(OMX_SendCommand(dec, OMX_CommandStateSet, OMX_StateExecuting,
@@ -1620,8 +1626,8 @@ int main(int argc, char *argv[])
 			ctx.decstate = DECFAILED;
 			/* Drop through */
 		case DECFAILED:
-			fprintf(stderr, "Failed to set the parameters after "
-					"%d video frames.  Giving up.\n", i);
+			logprintf(V_ALWAYS, "Failed to set the parameters after "
+					"%d video frames. Giving up.\n", i);
 			dumpport(dec, PORT_DEC);
 			dumpport(dec, PORT_DEC+1);
 			dumpport(enc, PORT_ENC);
@@ -1711,7 +1717,7 @@ int main(int argc, char *argv[])
 						memcpy(sps, pkt.data,
 							pkt.size);
 						spssize = pkt.size;
-						printf("New SPS, length %d\n", spssize);
+						logprintf(V_INFO, "New SPS, length %d\n", spssize);
 						writepkt = false;
 					} else if (nt == 8) {
 						if (pps)
@@ -1720,7 +1726,7 @@ int main(int argc, char *argv[])
 						memcpy(pps, pkt.data,
 							pkt.size);
 						ppssize = pkt.size;
-						printf("New PPS, length %d\n", ppssize);
+						logprintf(V_INFO, "New PPS, length %d\n", ppssize);
 						writepkt = false;
 					}
 					if (nt == 7 || nt == 8) {
@@ -1754,7 +1760,7 @@ int main(int argc, char *argv[])
 					if (r != 0) {
 						char err[256];
 						av_strerror(r, err, sizeof(err));
-						printf("Failed to write a video frame: %s (%lld, %llx; %d %d) %x.\n", err, pkt.pts, pkt.pts, tick.nLowPart, tick.nHighPart, spare->nFlags);
+						logprintf(V_ALWAYS, "Failed to write a video frame: %s (%lld, %llx; %d %d) %x.\n", err, pkt.pts, pkt.pts, tick.nLowPart, tick.nHighPart, spare->nFlags);
 					} else {
 //						printf("Wrote a video frame! %lld (%llx)\n", pkt.pts, pkt.pts);
 						av_free_packet(&pkt);
@@ -1804,7 +1810,7 @@ int main(int argc, char *argv[])
 
 	end = time(NULL);
 
-	printf("Processed %d frames in %d seconds; %df/s\n\n\n",
+	logprintf(V_ALWAYS, "Processed %d frames in %d seconds; %df/s\n\n\n",
 		ctx.framecount, end-start, (ctx.framecount/(end-start)));
 
 	if (oc) {
