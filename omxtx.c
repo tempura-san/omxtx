@@ -32,7 +32,6 @@
  */
 
 #define _BSD_SOURCE
-#define FF_API_CODEC_ID 1
 
 #include <stdio.h>
 #include <stdint.h>
@@ -287,21 +286,20 @@ static void dumpport(OMX_HANDLETYPE handle, int port)
 
 
 
-static int mapcodec(enum CodecID id)
+static int mapcodec(enum AVCodecID id)
 {
 	logprintf(V_DEBUG, "Mapping codec ID %d (0x%02x) as ", id, id);
 	switch (id) {
-		case CODEC_ID_MPEG2VIDEO:
-		case CODEC_ID_MPEG2VIDEO_XVMC:
+		case AV_CODEC_ID_MPEG2VIDEO:
 			logprintf(V_DEBUG, "MPEG2 (%d)\n", OMX_VIDEO_CodingMPEG2);
 			return OMX_VIDEO_CodingMPEG2;
-		case CODEC_ID_H264:
+		case AV_CODEC_ID_H264:
 			logprintf(V_DEBUG, "AVC (%d)\n", OMX_VIDEO_CodingAVC);
 			return OMX_VIDEO_CodingAVC;
-		case CODEC_ID_MJPEG:
+		case AV_CODEC_ID_MJPEG:
 			logprintf(V_DEBUG, "MJPEG (%d)\n", OMX_VIDEO_CodingMJPEG);
 			return OMX_VIDEO_CodingMJPEG;
-		case CODEC_ID_MPEG4:
+		case AV_CODEC_ID_MPEG4:
 			logprintf(V_DEBUG, "MPEG4 (%d)\n", OMX_VIDEO_CodingMPEG4);
 			return OMX_VIDEO_CodingMPEG4;
 		default:
@@ -386,15 +384,15 @@ static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
 	for (i = 0; i < ic->nb_streams; i++) {
 		iflow = ic->streams[i];
 		if (i == idx) {	/* My new H.264 stream. */
-			c = avcodec_find_encoder(CODEC_ID_H264);
+			c = avcodec_find_encoder(AV_CODEC_ID_H264);
 			ctx.outindex[i] = streamindex++;
 			logprintf(V_DEBUG, "Found a codec at %p\n", c);
 			oflow = avformat_new_stream(oc, c);
-			logprintf(V_DEBUG, "Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d, ticks: %d; %d %lld/%lld\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate), oflow->codec->ticks_per_frame, iflow->codec->ticks_per_frame, oc->start_time_realtime, ic->start_time_realtime);
+			logprintf(V_DEBUG, "Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d, ticks: %d; %d %lld/%lld\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->avg_frame_rate), ETB(iflow->avg_frame_rate), oflow->codec->ticks_per_frame, iflow->codec->ticks_per_frame, oc->start_time_realtime, ic->start_time_realtime);
 			cc = oflow->codec;
 			cc->width = viddef->nFrameWidth;
 			cc->height = viddef->nFrameHeight;
-			cc->codec_id = CODEC_ID_H264;
+			cc->codec_id = AV_CODEC_ID_H264;
 			cc->codec_type = AVMEDIA_TYPE_VIDEO;
 			cc->bit_rate = ctx.bitrate;
 			cc->profile = FF_PROFILE_H264_HIGH;
@@ -402,7 +400,7 @@ static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
 			cc->time_base = iflow->codec->time_base;
 
 			oflow->avg_frame_rate = iflow->avg_frame_rate;
-			oflow->r_frame_rate = iflow->r_frame_rate;
+			oflow->avg_frame_rate = iflow->avg_frame_rate;
 			oflow->start_time = AV_NOPTS_VALUE;
 
 			if (!ctx.resize) {
@@ -416,8 +414,8 @@ static AVFormatContext *makeoutputcontext(AVFormatContext *ic,
 				    iflow->codec->sample_aspect_ratio.den;
 			}
 
-			logprintf(V_DEBUG, "Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->r_frame_rate), ETB(iflow->r_frame_rate));
-			logprintf(V_DEBUG, "Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.den, oflow->r_frame_rate.num, oflow->r_frame_rate.den);
+			logprintf(V_DEBUG, "Defaults: output stream: %d/%d, input stream: %d/%d, input codec: %d/%d, output codec: %d/%d, output framerate: %d/%d, input framerate: %d/%d\n", ETB(oflow->time_base), ETB(iflow->time_base), ETB(iflow->codec->time_base), ETB(oflow->codec->time_base), ETB(oflow->avg_frame_rate), ETB(iflow->avg_frame_rate));
+			logprintf(V_DEBUG, "Time base: %d/%d, fps %d/%d\n", oflow->time_base.num, oflow->time_base.den, oflow->avg_frame_rate.num, oflow->avg_frame_rate.den);
 		} else { 	/* Something pre-existing. */
 			if ((ctx.flags & FLAGS_NOSUBS) &&
 				iflow->codec->codec_type !=
@@ -1419,7 +1417,7 @@ int main(int argc, char *argv[])
 
 	logprintf(V_INFO, "Frame size: %dx%d\n", ic->streams[vidindex]->codec->width,
 		ic->streams[vidindex]->codec->height);
-	ish264 = (ic->streams[vidindex]->codec->codec_id == CODEC_ID_H264);
+	ish264 = (ic->streams[vidindex]->codec->codec_id == AV_CODEC_ID_H264);
 
 	/* Output init: */
 #if 0
